@@ -8,6 +8,7 @@ from astronomy.output import calculate_and_collect_data
 from datetime import datetime, timedelta
 from dash.exceptions import PreventUpdate
 import urllib.parse
+import os
 
 # 상수 정의
 TIMEZONE_OFFSET = 9  # KST는 UTC+9
@@ -129,10 +130,16 @@ main_layout = dbc.Container([
                 href="#",
                 id='timetable-link',
                 target='_blank'
+            ),
+            # 'clouds' 버튼 추가
+            dbc.Button(
+                "clouds",
+                id='clouds-button',
+                className='btn btn-secondary ml-2'
             )
         ], width=12, className="mt-3 d-flex justify-content-start")
-    ]),
-    # 그래프 표시 영역에 로딩 스피너 추가
+    ], className='mb-2'),
+    # 그래프 및 이미지 표시 영역에 로딩 스피너 추가
     dbc.Row([
         dbc.Col([
             dcc.Loading(
@@ -140,11 +147,12 @@ main_layout = dbc.Container([
                 type='circle',
                 children=[
                     dcc.Graph(id='esurface-graph'),
-                    dcc.Graph(id='moon-elevation-graph')  # 새로운 그래프 추가
+                    dcc.Graph(id='moon-elevation-graph'),
+                    html.Div(id='clouds-animation-container', style={'textAlign': 'center', 'marginTop': '20px'})
                 ]
             )
         ], width=12)
-    ], className='mt-4')
+    ], className='mt-4'),
 ], fluid=True)
 
 # 타임테이블 페이지 레이아웃
@@ -166,6 +174,30 @@ timetable_layout = dbc.Container([
     ])
 ], fluid=True)
 
+# 애니메이션 페이지 레이아웃 (슬라이더 및 이미지)
+clouds_layout = dbc.Container([
+    dbc.Row([
+        dbc.Col([
+            html.H2("Clouds Visualization", className="text-center my-4")
+        ])
+    ]),
+    dbc.Row([
+        dbc.Col([
+            dcc.Slider(
+                id='image-slider',
+                min=0,
+                max=23,
+                step=1,
+                value=0,
+                marks={i: f"{i+1}" for i in range(24)},
+                tooltip={"placement": "bottom", "always_visible": True}
+            ),
+            html.Img(id='cloud-image', src='', style={'width': '30%', 'height': 'auto', 'marginTop': '20px'}),  # 이미지 크기 조정
+            html.Div(id='image-caption', className='text-center mt-2')
+        ], width=12)
+    ], className='mt-4')
+], fluid=True)
+
 # 애플리케이션 레이아웃 정의
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
@@ -180,6 +212,8 @@ app.layout = html.Div([
 def display_page(pathname):
     if pathname.startswith('/timetable'):
         return timetable_layout
+    elif pathname.startswith('/clouds'):
+        return clouds_layout
     else:
         return main_layout
 
@@ -277,7 +311,8 @@ def update_timetable_table(search):
     df = pd.DataFrame(data)
 
     # 'Local Time' 포맷 수정
-    df['Local Time'] = df['Local Time'].astype(str) + ' KST'
+    if 'Local Time' in df.columns:
+        df['Local Time'] = df['Local Time'].astype(str) + ' KST'
 
     # 테이블 생성 (페이지네이션 적용)
     table = dash_table.DataTable(
@@ -326,6 +361,9 @@ def update_graphs(selected_date, latitude, longitude):
         return {'data': [], 'layout': {}}, {'data': [], 'layout': {}}
 
     df = pd.DataFrame(data)
+    if 'E_surface (millilux)' not in df.columns or 'Local Time' not in df.columns:
+        return {'data': [], 'layout': {}}, {'data': [], 'layout': {}}
+
     df['E_surface (millilux)'] = pd.to_numeric(df['E_surface (millilux)'], errors='coerce')
     df['Local Time'] = pd.to_datetime(df['Local Time'], format='%Y-%m-%d %H:%M')
 
@@ -360,7 +398,7 @@ def update_graphs(selected_date, latitude, longitude):
                 'title': 'Time (KST)',
                 'tickformat': '%H:%M',
                 'tickmode': 'linear',
-                'dtick': 3600000 * 2,
+                'dtick': 3600000 * 2,  # 2시간 간격
                 'range': [start_time, end_time]
             },
             'yaxis': {
@@ -385,38 +423,95 @@ def update_graphs(selected_date, latitude, longitude):
     }
 
     # 두 번째 그래프 생성 코드
+    if 'Moon Alt (°)' not in df.columns:
+        return fig, {'data': [], 'layout': {}}
+
     df['Moon Alt (°)'] = pd.to_numeric(df['Moon Alt (°)'], errors='coerce')
 
     moon_fig = {
-    'data': [{
-        'x': df['Local Time'],
-        'y': df['Moon Alt (°)'],
-        'type': 'line',
-        'name': 'Moon Elevation',
-        'marker': {'color': 'black'}
-    }],
-    'layout': {
-        'title': 'Moon_sky_location',
-        'xaxis': {
-            'title': 'Time (KST)',
-            'tickformat': '%H:%M',
-            'tickmode': 'linear',
-            'dtick': 3600000 * 2,
-            'range': [start_time, end_time]
-        },
-        'yaxis': {
-            'title': 'Moon_elevation(degree)',
-            'range': [0, 90],
-            'autorange': False,
-            'tickvals': [0, 30, 60, 90],  # 여기에서 y축 눈금을 설정합니다.
-        },
-        'margin': {'l': 50, 'r': 20, 't': 50, 'b': 80},
-        'height': 400
+        'data': [{
+            'x': df['Local Time'],
+            'y': df['Moon Alt (°)'],
+            'type': 'line',
+            'name': 'Moon Elevation',
+            'marker': {'color': 'black'}
+        }],
+        'layout': {
+            'title': 'Moon Elevation',
+            'xaxis': {
+                'title': 'Time (KST)',
+                'tickformat': '%H:%M',
+                'tickmode': 'linear',
+                'dtick': 3600000 * 2,  # 2시간 간격
+                'range': [start_time, end_time]
+            },
+            'yaxis': {
+                'title': 'Moon Elevation (°)',
+                'range': [0, 90],
+                'autorange': False,
+                'tickvals': [0, 30, 60, 90],
+                'ticktext': ['0', '30', '60', '90']
+            },
+            'margin': {'l': 50, 'r': 20, 't': 50, 'b': 80},
+            'height': 400
         }
     }
 
-
     return fig, moon_fig
+
+# 슬라이더를 사용하여 이미지 인덱스를 선택하고 이미지 표시 콜백
+@app.callback(
+    [Output('cloud-image', 'src'),
+     Output('image-caption', 'children')],
+    [Input('image-slider', 'value')]
+)
+def update_cloud_image(slider_value):
+    # 이미지 파일 리스트 가져오기
+    image_dir = 'assets/cloud_images'
+    
+    # 파일 이름에서 숫자 부분을 추출하여 정렬
+    image_files = sorted(
+        [f for f in os.listdir(image_dir) if f.startswith('cloud_') and f.endswith('.png')],
+        key=lambda x: int(x.split('_')[1].split('.')[0])
+    )
+
+    if not image_files:
+        return '', '이미지를 찾을 수 없습니다.'
+
+    if slider_value < 0 or slider_value >= len(image_files):
+        return '', '잘못된 이미지 인덱스입니다.'
+
+    image_filename = image_files[slider_value]
+    image_src = app.get_asset_url(f'cloud_images/{image_filename}')
+
+    # tmef_list 불러오기
+    tmef_list_path = os.path.join(image_dir, 'tmef_list.txt')
+    if not os.path.exists(tmef_list_path):
+        return image_src, 'tmef_list 파일이 존재하지 않습니다.'
+
+    with open(tmef_list_path, 'r') as f:
+        tmef_list = [line.strip() for line in f]
+
+    # tmef_list와 image_files의 길이가 일치하는지 확인
+    if len(tmef_list) != len(image_files):
+        return image_src, 'tmef_list와 이미지 파일 수가 일치하지 않습니다.'
+
+    if slider_value >= len(tmef_list):
+        caption = '시간 정보가 없습니다.'
+    else:
+        tmef = tmef_list[slider_value]
+        caption = f"Time: {tmef}"
+
+    return image_src, caption
+
+# 'clouds' 버튼 클릭 시 '/clouds' 페이지로 이동하는 콜백
+@app.callback(
+    Output('url', 'pathname'),
+    [Input('clouds-button', 'n_clicks')],
+    prevent_initial_call=True
+)
+def navigate_to_clouds(n_clicks):
+    return '/clouds'
 
 # 애플리케이션 실행
 if __name__ == '__main__':
