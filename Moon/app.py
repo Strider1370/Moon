@@ -342,7 +342,7 @@ def update_graphs(selected_date, latitude, longitude):
 
     traces = []
     for _, row in conditions.iterrows():
-        y_values = df['E_surface (millilux)'] * row['weight'] + 0.5
+        y_values = (df['E_surface (millilux)'] + 0.2) * row['weight'] + 0.3
         trace = {
             'x': df['Local Time'],
             'y': y_values,
