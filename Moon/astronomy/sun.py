@@ -1,10 +1,10 @@
 # astronomy/sun.py
+
 import math
 from .helpers import julian_day, get_julian_centuries, greenwich_mean_sidereal_time, \
     apparent_sidereal_time, mean_obliquity_of_ecliptic, equatorial_to_horizontal, atmospheric_refraction_correction
 
 K_norm = 1.0  # Normal lobe contribution (assuming dull white surface)
-
 C_aerosol = 0.0218  # Clear
 C_rayleigh = 0.008735
 C_ozone = 0.02975
@@ -91,18 +91,28 @@ def calculate_E_DN_sun(E_ST, altitude_sun_deg):
     """
     # 고도를 라디안으로 변환
     altitude_sun_rad = math.radians(altitude_sun_deg)
-    
+
+    # 최대 공기 질량 m 값은 500으로 제한
+    m_limit = 500
+
     if altitude_sun_rad > -1:
         # 광학적 공기 질량 m 계산
         m = 1 / (math.cos(math.pi / 2 - altitude_sun_rad) + 0.15 * (3.885 + altitude_sun_rad)**-1.253)
+        
+        # m 값이 m_limit을 초과하지 않도록 제한
+        if m > m_limit:
+            m = m_limit
 
     else:
         # 고도가 -1 라디안 이하인 경우, m = 500
         m = 500
     
     # E_DN_sun 계산
-    E_DN_sun = E_ST * math.exp(-C_atmosphere * m)
-    
+    try:
+        E_DN_sun = E_ST * math.exp(-C_atmosphere * m)
+    except OverflowError:
+        E_DN_sun = 0  # 예외가 발생할 경우, E_DN_sun을 0으로 설정
+
     return E_DN_sun
 
 def calculate_cos_theta_s_sun(altitude_sun, azimuth_sun):

@@ -370,25 +370,14 @@ def update_graphs(selected_date, latitude, longitude):
     # x축 범위를 설정하기 위해 시작 시간과 종료 시간을 지정
     start_time = df['Local Time'].iloc[0]
     end_time = df['Local Time'].iloc[-1]
-
-    # 첫 번째 그래프 생성 코드
-    conditions = pd.DataFrame({
-        'weight': [1, 0.5, 0.2, 0.05],
-        'color': ['blue', 'green', 'orange', 'red'],
-        'name': ['Clear', 'SCT', 'BKN', 'OVC']
-    })
-
-    traces = []
-    for _, row in conditions.iterrows():
-        y_values = (df['E_surface (millilux)'] + 0.2) * row['weight'] + 0.3
-        trace = {
-            'x': df['Local Time'],
-            'y': y_values,
-            'type': 'line',
-            'name': row['name'],
-            'marker': {'color': row['color']}
-        }
-        traces.append(trace)
+  
+    traces = [{
+        'x': df['Local Time'],
+        'y': df['E_surface (millilux)'] + 0.5,  
+        'type': 'line',
+        'name': 'E_surface (millilux)',  # 그래프 레이블
+        'marker': {'color': 'blue'}  # 기본 색상 설정
+    }]
 
     fig = {
         'data': traces,
@@ -504,13 +493,14 @@ def update_cloud_image(slider_value):
 
     return image_src, caption
 
-# 'clouds' 버튼 클릭 시 '/clouds' 페이지로 이동하는 콜백
 @app.callback(
     Output('url', 'pathname'),
     [Input('clouds-button', 'n_clicks')],
     prevent_initial_call=True
 )
 def navigate_to_clouds(n_clicks):
+    if n_clicks is None:
+        raise PreventUpdate  # 버튼이 클릭되지 않으면 콜백이 실행되지 않음
     return '/clouds'
 
 # 애플리케이션 실행

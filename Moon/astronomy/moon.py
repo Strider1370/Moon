@@ -1,3 +1,5 @@
+# astronomy/moon.py
+
 import math
 from .helpers import (
     julian_day,
@@ -15,7 +17,6 @@ R_M = 1737.4  # Moon's radius in km
 E_sm = 1300  # Solar illuminance (W/m²)
 C = 0.072  # Moon's albedo
 K_norm = 1.0  # Normal lobe contribution (assuming dull white surface)
-
 C_aerosol = 0.0218  # Clear
 C_rayleigh = 0.008735
 C_ozone = 0.02975
@@ -249,58 +250,40 @@ def calculate_moon_illuminance(phase_angle_moon, moon_distance):
     
     return E_MT
 
-def calculate_surface_illuminance_moon(E_MT, altitude_moon):
-    """
-    지표면에서 받는 달빛 조도 E_surface_moon을 계산하는 함수.
-    
-    Parameters:
-        E_MT: 달빛 조도 (millilux)
-        altitude_moon: 달의 고도 (degrees)
-        
-    Returns:
-        E_surface_moon: 지표면에서의 달빛 조도 (millilux)
-    """
-    if altitude_moon > 0:  # 달이 지평선 위에 있을 때만 조도 계산
-        # Air Mass 계산
-        AM = 1 / math.sin(math.radians(altitude_moon))
-        
-        # 대기 투과율 계산
-        T_atm = 0.7 ** (AM ** 0.678)
-        
-        # 지표면에서 받는 달빛 조도 계산
-        E_surface_moon = E_MT * T_atm * math.sin(math.radians(altitude_moon))
-    else:
-        # 달이 지평선 아래에 있으면 조도는 0
-        E_surface_moon = 0
-    
-    return E_surface_moon
+import math
 
-def calculate_E_DN_moon(E_MT, altitude_moon_deg):
+def calculate_E_DN_moon(E_MT, altitude_moon_corrected):
     """
     대기를 통과한 달빛 조도 E_DN_moon을 계산하는 함수.
     
     Parameters:
         E_MT: 달빛 조도 (millilux)
-        altitude_moon_deg: 달의 고도 (degrees)
+        altitude_moon_corrected: 달의 고도 (degrees)
         
     Returns:
         E_DN_moon: 대기를 통과한 달빛 조도 (millilux)
     """
     # 고도를 라디안으로 변환
-    altitude_moon_rad = math.radians(altitude_moon_deg)
+    altitude_moon_rad = math.radians(altitude_moon_corrected)
     
+    # 최대 공기 질량 m 값은 500으로 제한
+    m_limit = 500
+
     if altitude_moon_rad > -1:
-        # 광학적 공기 질량 m 계산
+        # 공기 질량 m 계산
         m = 1 / (math.cos(math.pi / 2 - altitude_moon_rad) + 0.15 * (3.885 + altitude_moon_rad)**-1.253)
         
+        # m 값이 m_limit을 초과하지 않도록 제한
+        if m < 0:
+            m = m_limit
     else:
-        # 고도가 -1 라디안 이하인 경우, m = 500
-        m = 500
+        # 고도가 -1 라디안 이하일 경우, m = 500으로 설정
+        m = m_limit
     
-
     E_DN_moon = E_MT * math.exp(-C_atmosphere * m)
     
     return E_DN_moon
+
 
 def calculate_cos_theta_s_moon(altitude_moon, azimuth_moon):
     """
@@ -444,10 +427,7 @@ def calculate_moon_position_and_phase(year, month, day, hour, minute, second, la
 
     # 달의 조도(E_MT) 계산
     E_MT = calculate_moon_illuminance(phase_angle_moon, distance_moon)
-    
-    # 달빛 표면 조도(E_surface_moon) 계산
-    E_surface_moon = calculate_surface_illuminance_moon(E_MT, altitude_moon_corrected)
-    
+      
     # 대기를 통과한 달빛 조도(E_DN_moon) 계산
     E_DN_moon = calculate_E_DN_moon(E_MT, altitude_moon_corrected)
     
@@ -467,7 +447,6 @@ def calculate_moon_position_and_phase(year, month, day, hour, minute, second, la
         'phase_angle_moon': phase_angle_moon,
         'illumination': illumination,  
         'E_MT': E_MT,  
-        'E_surface_moon': E_surface_moon,  
         'E_DN_moon': E_DN_moon,  
         'E_DV_moon': E_DV_moon,  
         'cos_theta_s_moon': cos_theta_s_moon, 

@@ -21,7 +21,7 @@ def calculate_and_collect_data(year, month, day, timezone_offset, latitude, long
     """
     data = []
     # 시작 시간과 종료 시간 설정 (UTC 기준, 09:00부터 23:00 UTC)
-    start_time_utc = datetime(year, month, day, 9, 0, 0, tzinfo=timezone.utc)
+    start_time_utc = datetime(year, month, day, 7, 0, 0, tzinfo=timezone.utc)
     end_time_utc = datetime(year, month, day, 23, 0, 0, tzinfo=timezone.utc)
     delta = timedelta(minutes=10)
     current_time = start_time_utc
