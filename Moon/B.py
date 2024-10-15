@@ -29,8 +29,8 @@ def calculate_illuminance_for_point_at_time(latitude, longitude, time_utc):
 def process_csv(input_csv, year, month, day):
     """CSV 파일에서 위도와 경도를 읽어와 각 시간에 대한 E_surface 값을 시간별로 저장."""
     start_time_utc = datetime(year, month, day, 7, 0, 0)  # 07:00 UTC
-    end_time_utc = datetime(year, month, day, 23, 0, 0)   # 23:00 UTC
-    delta = timedelta(hours=1)
+    end_time_utc = datetime(year, month, day, 12, 0, 0)   # 12:00 UTC
+    delta = timedelta(minutes=10)  # 10분 간격
 
     # assets 폴더가 없으면 생성
     assets_dir = './assets'
@@ -41,7 +41,7 @@ def process_csv(input_csv, year, month, day):
 
     while current_time <= end_time_utc:
         # 각 시간별로 파일을 assets 폴더에 저장
-        output_csv = f'{assets_dir}/E_surface_{current_time.strftime("%Y%m%d%H")}.csv'
+        output_csv = f'{assets_dir}/E_surface_{current_time.strftime("%Y%m%d%H%M")}.csv'
         
         with open(input_csv, mode='r') as infile, open(output_csv, mode='w', newline='') as outfile:
             reader = csv.reader(infile)
@@ -71,7 +71,7 @@ def main():
 
     year = 2024
     month = 10
-    for day in range(1, 31):  # 1일부터 30일까지 반복
+    for day in range(18, 19):  # 1일부터 30일까지 반복
         process_csv(input_csv, year, month, day)
 
 if __name__ == "__main__":
