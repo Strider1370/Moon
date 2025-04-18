@@ -7,7 +7,7 @@ import cartopy.io.shapereader as shpreader
 import matplotlib.colors as mcolors
 
 # CSV 파일 읽기
-df = pd.read_csv('viirs_ntl_masked.csv')
+df = pd.read_csv('viirs_ntl_land_only.csv')
 
 # pivot_table을 사용해 위도와 경도 그리드 구성 (중복된 좌표의 값은 평균 처리)
 grid = df.pivot_table(index='Latitude', columns='Longitude', values='Nighttime_Lights', aggfunc='mean')

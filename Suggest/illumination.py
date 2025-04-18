@@ -4,96 +4,68 @@ import os
 import time
 import pandas as pd
 from datetime import datetime, timedelta
-
-# calculate.py에 정의된 함수 불러오기
 from calculate import get_illuminance_at
 
 def main():
-    """
-    예시:
-    2025-04-09 KST 18:00 ~ 2025-04-10 KST 08:00 사이(한 시간 간격)  
-    CSV로부터 위도, 경도 데이터를 읽어서, 각 지점의 조도값을 계산 후 
-    (Illuminance 컬럼 추가) 각 시간대별 CSV 파일로 저장합니다.
-    
-    또한 각 파일의 처리 소요 시간을 콘솔에 출력합니다.
-    """
+    # 1) 기본 설정
+    year, month, day = 2025, 4, 14
+    input_csv  = "grid_info.csv"   # CSV: lon, lat, (그 외 컬럼은 무시)
+    output_dir = "assets"
+    os.makedirs(output_dir, exist_ok=True)
 
-    # -------------------------
-    # 1) 사용자 입력(예시)
-    # -------------------------
-    # 계산할 '기준일' (KST)
-    year = 2025
-    month = 4
-    day = 9
+    # 2) 시간 범위 (UTC 기준)
+    start_utc = datetime(year, month, day, 13)
+    end_utc   = datetime(year, month, day, 20)
 
-    # 읽어들일 CSV 파일 경로 (위치 데이터가 포함된 파일)
-    input_csv = "viirs_ntl_land_only.csv"
+    # 3) CSV 읽기: lon / lat 만 사용
+    df_base = pd.read_csv(
+        input_csv,
+        header=None,
+        usecols=[0, 1],
+        names=["lon", "lat"]
+    )
 
-    # 결과 CSV를 저장할 폴더
-    output_folder = "assets"
-    os.makedirs(output_folder, exist_ok=True)
+    overall_t0 = time.perf_counter()
+    current_utc = start_utc
 
-    # -------------------------
-    # 2) 시간 범위 설정 (KST)
-    # -------------------------
-    start_kst = datetime(year, month, day, 18, 0, 0)      # 당일 18:00 KST
-    end_kst   = datetime(year, month, day + 1, 8, 0, 0)     # 다음날 08:00 KST
+    # 4) 한 시간 간격 루프
+    while current_utc <= end_utc:
+        tic = time.perf_counter()
 
-    # -------------------------
-    # 3) CSV 파일 읽기
-    # -------------------------
-    # CSV 파일은 최소한 Latitude, Longitude 컬럼이 있어야 합니다.
-    df_base = pd.read_csv(input_csv)
-
-    # 전체 처리 시작 시간 측정
-    overall_start = time.perf_counter()
-
-    # -------------------------
-    # 4) 한 시간 간격으로 루프
-    # -------------------------
-    current_kst = start_kst
-    while current_kst <= end_kst:
-        # 각 파일 처리 전 시간 측정
-        file_start = time.perf_counter()
-
-        # (A) current_kst(한국 시각)를 UTC로 변환 (KST = UTC +9 → UTC = KST - 9)
-        current_utc = current_kst - timedelta(hours=9)
-
-        # (B) 원본 DataFrame 복사 후 조도 계산 (Illuminance 컬럼 추가)
+        # (A) UTC 기준으로 조도 계산
         df = df_base.copy()
-
-        df["Illuminance"] = df.apply(
-            lambda row: get_illuminance_at(
+        df["lux"] = df.apply(
+            lambda r: get_illuminance_at(
                 current_utc.year,
                 current_utc.month,
                 current_utc.day,
                 current_utc.hour,
                 current_utc.minute,
-                row["Latitude"],
-                row["Longitude"]
+                r["lon"],   # latitude
+                r["lat"]    # longitude
             ),
             axis=1
         )
 
-        # (C) 파일 이름 생성 (예: 2025-04-09_18.csv)
-        filename = f"{year:04d}-{month:02d}-{day:02d}_{current_kst.hour:02d}.csv"
-        output_path = os.path.join(output_folder, filename)
+        # (B) KST 변환 및 파일명 생성
+        kst_time = current_utc + timedelta(hours=9)
+        fname = kst_time.strftime("%Y%m%d%H.csv")
 
-        # (D) CSV 파일 저장
-        df.to_csv(output_path, index=False)
+        # (C) CSV 저장 (열 순서: lon, lat, lux)
+        df.to_csv(
+            os.path.join(output_dir, fname),
+            columns=["lon", "lat", "lux"],
+            index=False
+        )
 
-        # 파일 처리 후 시간 측정
-        file_end = time.perf_counter()
-        elapsed = file_end - file_start
+        # (D) 콘솔 출력도 KST 기준으로
+        elapsed = time.perf_counter() - tic
+        print(f"[{kst_time:%Y-%m-%d %H:%M} KST] → {fname}  ({elapsed:.2f}s)")
 
-        print(f"[{current_kst.strftime('%Y-%m-%d %H:%M:%S')} KST] 파일 저장 완료 -> {output_path} (소요 시간: {elapsed:.2f}초)")
+        current_utc += timedelta(hours=1)
 
-        # (E) 다음 시간으로 1시간 증가
-        current_kst += timedelta(hours=1)
-
-    overall_end = time.perf_counter()
-    total_elapsed = overall_end - overall_start
-    print(f"\n전체 처리 완료 (총 소요 시간: {total_elapsed:.2f}초)")
+    total_elapsed = time.perf_counter() - overall_t0
+    print(f"\n전체 처리 시간: {total_elapsed:.2f}s")
 
 if __name__ == "__main__":
     main()

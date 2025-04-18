@@ -105,18 +105,22 @@ def get_illuminance_at(year, month, day, hour, minute, latitude, longitude):
     alt_moon, az_moon, _ = moon_apparent.altaz()
     alt_moon_deg = alt_moon.degrees
 
-    # 천정각 z = 90 - alt
+    # ——— Kasten & Young 대기질량 — 처리 로직 추가 ———
     z_deg = 90 - alt_moon_deg
-    if z_deg < 0:
-        # 달이 천정 위에 있으면 z=0으로 처리(계산 안정화)
-        z_deg = 0
+    # 음수 z_deg 방지(달이 머리 위일 때 안정화)
+    z_deg = max(z_deg, 0)
     z_rad = math.radians(z_deg)
 
-    # Kasten & Young (1989) 대기질량
-    m_air = 1.0 / (math.cos(z_rad) + 0.50572 * ((96.07995 - z_deg) ** -1.6364))
-    # m_air가 너무 크면 제한
-    if m_air > 500:
-        m_air = 500
+    m_limit = 500
+    # 달이 지평선 아래(alt_moon_deg ≤ 0)면 최대값으로
+    if alt_moon_deg <= 0:
+        m_air = m_limit
+    else:
+        # 원래 Kasten & Young 공식
+        delta = 96.07995 - z_deg
+        m_air = 1.0 / (math.cos(z_rad) + 0.50572 * (delta ** -1.6364))
+        # 과도하게 크면 클램핑
+        m_air = min(m_air, m_limit)
 
     # 대기 감쇠
     EDN_moon = E_MT * math.exp(-m_air * C)
