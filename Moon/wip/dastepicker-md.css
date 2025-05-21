@@ -26,3 +26,8 @@
     border: none;            /* 이미 바깥에 보더가 있으므로 제거 */
     background: transparent;
 }
+
+body, .dash-bootstrap, .InputGroupText, .dp-md, .Select-control, .Select-placeholder, .Select-value-label,
+.DateInput_input, .DateInput_input_1 {
+  font-size: 20px !important;
+}

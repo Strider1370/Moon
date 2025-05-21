@@ -326,10 +326,18 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
 
     fig.update_yaxes(title_text='달빛 밝기 (millilux)', row=1, col=1,
                      type='log', range=[0, 3], autorange=False,
+                     title_standoff=20,   # y축과의 간격(px)
                      tickmode='array', tickvals=[1,10,100,1000], **axis_opts)
     fig.update_yaxes(title_text='달 고도각 (°)', row=2, col=1,
+                     title_standoff=40,   # y축과의 간격(px)
                      range=[0, 70], autorange=False, **axis_opts)
    
+    fig.update_layout(font=dict(size=20))  # 전체 텍스트 크기
+    fig.update_xaxes(title_font=dict(size=20), tickfont=dict(size=18))
+    fig.update_yaxes(title_font=dict(size=20), tickfont=dict(size=18))
+    fig.update_layout(legend=dict(font=dict(size=22)))
+    fig.update_layout(hoverlabel=dict(font_size=20))
+
     # ── 간격 확보용 domain 조정 ──
     fig.update_yaxes(domain=[0.50, 1.00], row=1, col=1)
     fig.update_yaxes(domain=[0.00, 0.40], row=2, col=1)
