@@ -47,20 +47,24 @@ def illum_worker(args):
     y, m, d, H, M, lat, lon = args
     return get_illuminance_at(y, m, d, H, M, lat, lon)
 
-def main():
-    # 1) Calculate latest TMFC (KST)
+def main(tmfc_override=None):
+    # 1) Calculate or set TMFC (KST)
     release_hours = [2, 5, 8, 11, 14, 17, 20, 23]
     now_utc = datetime.now(timezone.utc)
     now_kst = now_utc + timedelta(hours=9)
-    release_times = []
-    for h in release_hours:
-        rt = now_kst.replace(hour=h, minute=0, second=0, microsecond=0)
-        if rt > now_kst:
-            rt -= timedelta(days=1)
-        release_times.append(rt)
-    tmfc = max(rt for rt in release_times if rt <= now_kst).strftime("%Y%m%d%H")
-    logger.info(f"Latest TMFC: {tmfc}")
-    
+    if tmfc_override is not None:
+        tmfc = tmfc_override
+        logger.info(f"TMFC overridden by user: {tmfc}")
+    else:
+        release_times = []
+        for h in release_hours:
+            rt = now_kst.replace(hour=h, minute=0, second=0, microsecond=0)
+            if rt > now_kst:
+                rt -= timedelta(days=1)
+            release_times.append(rt)
+        tmfc = max(rt for rt in release_times if rt <= now_kst).strftime("%Y%m%d%H")
+        logger.info(f"Latest TMFC: {tmfc}")
+
     # 2) CSV 경로
     csv_path = Path("assets") / "clouds" / tmfc / f"clouds_all_{tmfc}.csv"
     logger.info(f"Loading CSV: {csv_path}")
@@ -75,12 +79,43 @@ def main():
     
     # 4) 처리할 시간 컬럼 필터링
     all_time_cols = [c for c in df.columns if c.isdigit() and len(c) == 10]
-    desired_kst_hours = {23, 2, 5}
-    time_cols = [
-        c for c in all_time_cols
-        if datetime.strptime(c, "%Y%m%d%H").hour in desired_kst_hours
-    ]
+
+    # 20~23시, 0~8시까지 매시간 (KST)
+    evening_hours = list(range(20, 24)) + list(range(0, 9))
+
+    # 구름자료(3시간 간격) 컬럼 추출 (실제 데이터에 맞게)
+    cloud_cols = sorted(all_time_cols, key=lambda x: datetime.strptime(x, "%Y%m%d%H"))
+
+    # 1시간 단위 time_cols 생성 (evening_hours만, csv에 없어도 생성)
+    if cloud_cols:
+        first_cloud_time = datetime.strptime(cloud_cols[0], "%Y%m%d%H")
+        last_cloud_time = datetime.strptime(cloud_cols[-1], "%Y%m%d%H")
+        time_cols = []
+        t = first_cloud_time
+        while t <= last_cloud_time:
+            if t.hour in evening_hours:
+                col = t.strftime("%Y%m%d%H")
+                time_cols.append(col)
+            t += timedelta(hours=1)
+    else:
+        time_cols = []
+
+    # 각 시간별로 사용할 구름자료 매핑
+    def get_cloud_col(tcol):
+        t = datetime.strptime(tcol, "%Y%m%d%H")
+        if not cloud_cols:
+            raise ValueError("cloud_cols가 비어 있습니다. 구름자료 컬럼을 확인하세요.")
+        prev_clouds = [c for c in cloud_cols if datetime.strptime(c, "%Y%m%d%H") <= t]
+        if prev_clouds:
+            return max(prev_clouds, key=lambda c: datetime.strptime(c, "%Y%m%d%H"))
+        else:
+            return cloud_cols[0]
+
     logger.info(f"Forecast times to process (KST hours): {[c[-2:] for c in time_cols]}")
+    logger.info(f"all_time_cols: {all_time_cols}")
+    logger.info(f"cloud_cols: {cloud_cols}")
+    logger.info(f"first_cloud_time: {first_cloud_time if cloud_cols else None}")
+    logger.info(f"time_cols: {time_cols}")
     
     # 5) 지도 투영 설정
     LAT_MIN, LAT_MAX = 32.5, 38.5
@@ -100,16 +135,16 @@ def main():
     bins   = [-0.1, 50, 100, 200, float('inf')]
     labels = ['위험', '경고', '주의', '관심']
     risk_colors = {
-        '위험': 'red',
-        '경고': 'orange',
-        '주의': 'yellow',
-        '관심': 'green'
+        '위험': '#d9534f',    # muted red
+        '경고': '#f0ad4e',    # muted orange
+        '주의': '#ffe066',    # soft yellow
+        '관심': '#5cb85c'     # muted green
     }
     
     # 8) 예측 시각별 반복 처리
     for tcol in tqdm(time_cols, desc="Processing forecasts", unit="forecast"):
         y, m, d, H, M = parse_time(tcol)
-        
+
         coords = [(y, m, d, H, M, lat, lon) for lat, lon in zip(df['lat'], df['lon'])]
         R_light = list(
             tqdm(
@@ -118,10 +153,16 @@ def main():
             )
         )
         df['R_light'] = R_light
-        
+
+        # 사용할 구름자료 컬럼 결정
+        cloud_col = get_cloud_col(tcol)
+        if cloud_col not in df.columns:
+            logger.warning(f"구름자료 컬럼 {cloud_col}이(가) 데이터에 없습니다. 건너뜁니다.")
+            continue
+
         df['illum_mlux'] = (
             df['R_light'] *
-            df[tcol].map(CLOUD_FACTOR).fillna(DEFAULT_FACTOR) *
+            df[cloud_col].map(CLOUD_FACTOR).fillna(DEFAULT_FACTOR) *
             1000.0
         )
         df['risk_cat'] = pd.cut(df['illum_mlux'], bins=bins, labels=labels)
@@ -169,9 +210,20 @@ def main():
         plt.close(fig)
         logger.info(f"Saved {out_fname}")
     
+    if not time_cols:
+        logger.warning("time_cols가 비어 있습니다. 생성할 이미지가 없습니다. CSV 파일과 시간 조건을 확인하세요.")
+        return
+
+
+
     pool.close()
     pool.join()
     logger.info("All selected forecasts processed and saved.")
 
+
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--tmfc', type=str, default=None, help='TMFC(YYYYMMDDHH) 직접 지정')
+    args = parser.parse_args()
+    main(tmfc_override=args.tmfc)
