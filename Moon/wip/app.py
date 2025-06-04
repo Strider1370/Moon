@@ -101,23 +101,23 @@ app.layout = dbc.Container(
 
                 # ──── 날짜: 화살표 버튼 제거 + 상단 라벨 ────
                 dbc.Col(
-                            dbc.InputGroup(
-                                [
-                                    dbc.InputGroupText("날짜"),
-                                    dcc.DatePickerSingle(
-                                        id='date-picker',
-                                        className='dp-md',          # ← 위 CSS가 적용될 대상
-                                        date=now_kst.date(),
-                                        display_format=DATE_FORMAT,
-                                        min_date_allowed=datetime(2000, 1, 1),
-                                        max_date_allowed=datetime(2100, 12, 31),
-                                        style={'width': '100px'}    # 숫자 입력과 폭 맞추기
-                                    )
-                                ],
-                                size='md'
-                            ),
-                            width='auto'
-                        )
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("날짜"),
+                            dcc.DatePickerSingle(
+                                id='date-picker',
+                                className='dp-md',          # ← 위 CSS가 적용될 대상
+                                date=now_kst.date(),
+                                display_format=DATE_FORMAT,
+                                min_date_allowed=datetime(2000, 1, 1),
+                                max_date_allowed=datetime(2100, 12, 31),
+                                style={'width': '100px'}    # 숫자 입력과 폭 맞추기
+                            )
+                        ],
+                        size='md'
+                    ),
+                    width='auto'
+                )
             ],
             justify='center',
             align='center',
@@ -155,7 +155,35 @@ app.layout = dbc.Container(
         ),
 
         dbc.Row(
-            dbc.Col(dcc.Graph(id='combined-graph'))
+            [
+                # 왼쪽 1/3: 슬라이더 및 (향후) 이미지
+                dbc.Col(
+                    [
+                        html.Div(
+                            [
+                                html.Label("조도-이미지", style={'font-weight': 'bold'}),
+                                dcc.Slider(
+                                    id='custom-slider',
+                                    min=0,
+                                    max=12,
+                                    step=1,
+                                    value=0,
+                                    marks={}  # 콜백에서 동적으로 설정
+                                                                    ),
+                                # 향후 이미지 추가 위치
+                                html.Div(id='image-placeholder', style={'margin-top': '2rem'})
+                            ],
+                            style={'padding': '2rem'}
+                        )
+                    ],
+                    width=4  # 12분할 기준 4/12 = 1/3
+                ),
+                # 오른쪽 2/3: 그래프
+                dbc.Col(
+                    dcc.Graph(id='combined-graph'),
+                    width=8  # 12분할 기준 8/12 = 2/3
+                )
+            ]
         )
     ],
     fluid=True
@@ -230,6 +258,10 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
     hourly_cloud = [cloud_lbls[i]   for i in hourly_idx]
     colors_10min = ['red' if v<=50 else 'orange' if v<=100 else 'yellow' if v<=200 else 'green'
                     for v in illum_vals]
+
+    # === 2시간 간격 x축 레이블 생성 ===
+    twohour_idx = [i for i, t in enumerate(hourly_times) if int(t[:2]) % 2 == 0]
+    twohour_times = [hourly_times[i] for i in twohour_idx]
 
     # ===============================================================
     # ② 첫번째 그래프 ─ 조도(mlux)
@@ -319,9 +351,9 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
     # ④ 축·레이아웃 공통 설정
     # ===============================================================
     axis_opts = dict(showline=False, showgrid=True, gridcolor='whitesmoke', gridwidth=1)
-    fig.update_xaxes(tickmode='array', tickvals=hourly_times, ticktext=hourly_times,
+    fig.update_xaxes(tickmode='array', tickvals=twohour_times, ticktext=twohour_times,
                      title_text='시간 (KST)', row=1, col=1, **axis_opts)
-    fig.update_xaxes(tickmode='array', tickvals=hourly_times, ticktext=hourly_times,
+    fig.update_xaxes(tickmode='array', tickvals=twohour_times, ticktext=twohour_times,
                      title_text='시간 (KST)', row=2, col=1, **axis_opts)
 
     fig.update_yaxes(title_text='달빛 밝기 (millilux)', row=1, col=1,
@@ -353,6 +385,78 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
     ntl_text = '인공광 있음 (1)' if ntl else '인공광 없음 (0)'
     return fig, ntl_text
 
+from dash.dependencies import Input, Output, State
+import os
+
+@app.callback(
+    [Output('custom-slider', 'marks'),
+     Output('custom-slider', 'min'),
+     Output('custom-slider', 'max'),
+     Output('custom-slider', 'value'),
+     Output('image-placeholder', 'children')],
+    [Input('date-picker', 'date'),
+     Input('custom-slider', 'value')]
+)
+def update_slider_and_image(date_str, slider_idx):
+    # 1. 시간 리스트 생성 (20시~08시)
+    date = datetime.fromisoformat(date_str)
+    hours = list(range(20, 24)) + list(range(0, 9))
+    time_labels = []
+    time_keys = []
+    for h in hours:
+        if h >= 20:
+            dt = datetime(date.year, date.month, date.day, h)
+        else:
+            dt = datetime(date.year, date.month, date.day, h) + timedelta(days=1)
+        key = dt.strftime("%Y%m%d%H")
+        label = dt.strftime("%H시")
+        time_labels.append(label)
+        time_keys.append(key)
+
+    # 2. clouds 폴더 내 모든 이미지 파일 탐색, 폴더명 내림차순(최신 우선)
+    image_map = {}
+    clouds_root = os.path.join("assets", "clouds")
+    if os.path.exists(clouds_root):
+        subdirs = sorted(
+            [d for d in os.listdir(clouds_root) if os.path.isdir(os.path.join(clouds_root, d))],
+            reverse=True
+        )
+        for subdir in subdirs:
+            folder = os.path.join(clouds_root, subdir)
+            for fname in os.listdir(folder):
+                if fname.startswith("illum_risk_") and fname.endswith(".png"):
+                    key = fname.replace("illum_risk_", "").replace(".png", "")
+                    if key not in image_map:
+                        image_map[key] = os.path.join(folder, fname)
+
+    # 3. 슬라이더 marks/min/max/value
+    marks = {i: label for i, label in enumerate(time_labels)}
+    min_val = 0
+    max_val = len(time_labels) - 1
+    value = slider_idx if slider_idx is not None else 0
+
+    # 4. 이미지 파일 경로 (가장 최근 폴더 기준)
+    img_key = time_keys[value]
+    img_path = image_map.get(img_key)
+    if img_path and os.path.exists(img_path):
+        img_div = html.Div(
+            html.Img(src=f"/{img_path.replace(os.sep, '/')}", style={'width': '100%', 'max-width': '400px'}),
+            style={'display': 'flex', 'justifyContent': 'center'}
+        )
+    else:
+        img_div = html.Div(
+            "no-image",
+            style={
+                'color': 'gray',
+                'font-size': '2rem',
+                'text-align': 'center',
+                'margin-top': '2rem',
+                'display': 'flex',
+                'justifyContent': 'center'
+            }
+        )
+
+    return marks, min_val, max_val, value, img_div
 
 # ========================
 # Run Server
