@@ -1,0 +1,28 @@
+/* DatePickerSingle를 InputGroup(size=md) 높이에 맞추고
+   안쪽 DateInput 보더를 제거해 "네모 한 겹"만 남긴다  */
+
+   .dp-md .SingleDatePickerInput {
+    /* 바깥 보더는 그대로 두고 높이·패딩만 md 입력과 동일하게 */
+    height: 38px;
+    padding: 0;              /* 불필요한 여백 제거 */
+    border: 1px solid #ced4da;
+    border-radius: .25rem;
+    box-sizing: border-box;
+}
+
+.dp-md .DateInput {          /* ← 2번째(안쪽) 박스 */
+    border: none !important; /* 보더 삭제 → 겹침 해결 */
+    padding: 0 !important;   /* 여분 패딩도 제거 */
+    background: transparent; /* 회색 배경 방지 */
+}
+
+/* 입력창 자체 스타일(필요하면 유지) */
+.dp-md .DateInput_input,
+.dp-md .DateInput_input_1 {
+    height: 100%;            /* SingleDatePickerInput 높이를 그대로 채움 */
+    padding: .375rem .75rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    border: none;            /* 이미 바깥에 보더가 있으므로 제거 */
+    background: transparent;
+}
