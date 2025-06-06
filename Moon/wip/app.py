@@ -213,38 +213,92 @@ def callback_update_coords(city):
 )
 
 def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
-    # ===============================================================
-    # ① 공통 부분 ─ 데이터 준비 (타임스탬프·구름·조도·달 고도 계산)
-    # ===============================================================
-    show_bg    = 'impact' in impact_opt
     show_cloud = 'clouds' in cloud_opt
-    date       = datetime.fromisoformat(date_str)
-
-    # 10 분 간격(UTC 09–23) 타임스탬프
+    show_impact = 'impact' in impact_opt
+    date = datetime.fromisoformat(date_str)
     start_utc  = datetime(date.year, date.month, date.day, 9, 0, tzinfo=timezone.utc)
-    times_utc  = [start_utc + timedelta(minutes=10 * i)
-                  for i in range(((23 - 9) * 60 // 10) + 1)]
+    times_utc  = [start_utc + timedelta(minutes=10 * i) for i in range(((23 - 9) * 60 // 10) + 1)]
 
-    # 구름·NTL(인공광) 데이터
-    df   = pd.read_csv(SHARED_FILE) if os.path.exists(SHARED_FILE) else None
-    vals, ntl = None, 0
-    if df is not None and lat is not None and lon is not None:
-        latc, lonc = ('lat', 'lon') if 'lat'  in df.columns else ('latitude', 'longitude')
-        row        = df.loc[((df[latc] - lat)**2 + (df[lonc] - lon)**2).idxmin()]
-        ntl        = int(row.get('ntl', row.get('NTL', 0)))
-        if show_cloud:
-            vals = [row[c] for c in df.columns if c not in [latc, lonc, 'ntl', 'NTL']]
+    # 1. TMFC 폴더 최신순 정렬
+    clouds_root = os.path.join("assets", "clouds")
+    subdirs = sorted(
+        [d for d in os.listdir(clouds_root) if os.path.isdir(os.path.join(clouds_root, d))],
+        reverse=True
+    )
+    # 2. TMFC별로 csv 미리 읽기
+    csv_dfs = {}
+    for subdir in subdirs:
+        csv_path = os.path.join(clouds_root, subdir, f"clouds_all_{subdir}.csv")
+        if os.path.exists(csv_path):
+            try:
+                csv_dfs[subdir] = pd.read_csv(csv_path)
+            except Exception:
+                continue
 
-    illum_vals, moon_alts, cloud_lbls = [], [], []
+    # 3. ntl은 최신 TMFC에서 한 번만 읽기
+    ntl = 0
+    for subdir in subdirs:
+        df = csv_dfs.get(subdir)
+        if df is not None and lat is not None and lon is not None:
+            latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+            row = df.loc[((df[latc] - lat)**2 + (df[lonc] - lon)**2).idxmin()]
+            ntl = int(row.get('ntl', row.get('NTL', 0)))
+            break
+
+    # 4. 각 시간대별로 최신 TMFC에서 구름값 찾기
+    cloud_val_map = {}
     for t in times_utc:
+        col = (t + timedelta(hours=9)).strftime("%Y%m%d%H")
+        for subdir in subdirs:
+            df = csv_dfs.get(subdir)
+            if df is not None and col in df.columns and lat is not None and lon is not None:
+                latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+                row = df.loc[((df[latc] - lat)**2 + (df[lonc] - lon)**2).idxmin()]
+                cloud_val_map[col] = row[col]
+                break
+        else:
+            cloud_val_map[col] = None
+
+    # 5. 기존 조도 계산 루프에서 cloud_val_map 사용
+    illum_vals, moon_alts, cloud_lbls = [], [], []
+    # 1. 모든 구름 데이터 컬럼(3시간 간격) 리스트 만들기
+    cloud_cols = []
+    for subdir in subdirs:
+        df = csv_dfs.get(subdir)
+        if df is not None:
+            latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+            for col in df.columns:
+                if col.isdigit() and len(col) == 10:  # YYYYMMDDHH 형식
+                    cloud_cols.append(col)
+    cloud_cols = sorted(set(cloud_cols))
+
+    # 2. 각 10분 단위 시간에 대해 가장 가까운 구름 컬럼 찾기
+    def find_nearest_cloud_col(t_kst, cloud_cols):
+        # t_kst: datetime (KST, offset-aware)
+        t_strs = [col for col in cloud_cols]
+        t_dts = [datetime.strptime(col, "%Y%m%d%H").replace(tzinfo=kst) for col in t_strs]  # ← 수정
+        diffs = [abs((t_kst - dt).total_seconds()) for dt in t_dts]
+        idx = diffs.index(min(diffs))
+        return t_strs[idx]
+
+    # 3. 기존 루프에서 적용
+    for t in times_utc:
+        t_kst = t + timedelta(hours=9)
         lux = get_illuminance_at(t.year, t.month, t.day, t.hour, t.minute, lat, lon)
-        ml  = lux * 1000 + 1                                    # mlux (log 축의 0 회피용 +1)
+        ml  = lux * 1000 + 1
         lbl = '데이터 없음'
-        if vals is not None:
-            idx = int((t - tmfc_utc).total_seconds() / 3600 / 3)
-            if 0 <= idx < len(vals):
-                ml  *= {1: 0.8, 3: 0.5, 4: 0.2}.get(vals[idx], 1)
-                lbl  = {1: '맑음', 3: '구름 많음', 4: '흐림'}.get(vals[idx], '데이터없음')
+        if show_cloud and cloud_cols:
+            nearest_col = find_nearest_cloud_col(t_kst, cloud_cols)
+            # 최신 TMFC부터 탐색
+            for subdir in subdirs:
+                df = csv_dfs.get(subdir)
+                if df is not None and nearest_col in df.columns and lat is not None and lon is not None:
+                    latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+                    row = df.loc[((df[latc] - lat)**2 + (df[lonc] - lon)**2).idxmin()]
+                    cloud_val = row[nearest_col]
+                    ml  *= {1: 1.0, 3: 0.5, 4: 0.2}.get(cloud_val, 1)
+                    lbl = {1: '맑음', 3: '구름 많음', 4: '흐림'}.get(cloud_val, '데이터없음')
+                    break
         illum_vals.append(ml)
         moon_alts.append(get_moon_altitude(t.year, t.month, t.day, t.hour, t.minute, lat, lon))
         cloud_lbls.append(lbl)
@@ -259,9 +313,16 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
     colors_10min = ['red' if v<=50 else 'orange' if v<=100 else 'yellow' if v<=200 else 'green'
                     for v in illum_vals]
 
-    # === 2시간 간격 x축 레이블 생성 ===
-    twohour_idx = [i for i, t in enumerate(hourly_times) if int(t[:2]) % 2 == 0]
-    twohour_times = [hourly_times[i] for i in twohour_idx]
+    # 2시간 간격 라벨 생성
+    twohour_idx = [i for i, t in enumerate(times_utc) if t.minute == 0 and (t.hour % 2 == 0)]
+    twohour_times = [times_kst[i] for i in twohour_idx]
+
+    # 위험도 색상 분기
+    if show_impact:
+        colors_10min = ['red' if v<=50 else 'orange' if v<=100 else 'yellow' if v<=200 else 'green'
+                        for v in illum_vals]
+    else:
+        colors_10min = ['#b3e6ff'] * len(illum_vals)  # 단일색(밝은 파랑 등)
 
     # ===============================================================
     # ② 첫번째 그래프 ─ 조도(mlux)
@@ -270,6 +331,9 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
     #     • 마커      : 1 시간 조도(+구름 툴팁)
     # ===============================================================
     fig = make_subplots(rows=2, cols=1, shared_xaxes=False, vertical_spacing=0.1)
+
+    # show_bg: 배경 막대 표시 여부 (구름 옵션과 동일하게)
+    show_bg = show_impact
 
     # (a) 배경 막대
     fig.add_trace(
@@ -310,10 +374,11 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
     )
 
     # 위험도 범례
-    for name, color in {'위험':'red','경고':'orange','주의':'yellow','안전':'green'}.items():
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                 marker=dict(color=color, size=14),
-                                 name=name, visible=show_bg))
+    if show_impact:
+        for name, color in {'위험':'red','경고':'orange','주의':'yellow','안전':'green'}.items():
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                     marker=dict(color=color, size=14),
+                                     name=name, visible=show_bg))
 
     # ===============================================================
     # ③ 두번째 그래프 ─ 달 고도(°)
@@ -362,7 +427,7 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
                      tickmode='array', tickvals=[1,10,100,1000], **axis_opts)
     fig.update_yaxes(title_text='달 고도각 (°)', row=2, col=1,
                      title_standoff=40,   # y축과의 간격(px)
-                     range=[0, 70], autorange=False, **axis_opts)
+                     range=[0, 80], autorange=False, **axis_opts)
    
     fig.update_layout(font=dict(size=20))  # 전체 텍스트 크기
     fig.update_xaxes(title_font=dict(size=20), tickfont=dict(size=18))
@@ -395,9 +460,16 @@ import os
      Output('custom-slider', 'value'),
      Output('image-placeholder', 'children')],
     [Input('date-picker', 'date'),
-     Input('custom-slider', 'value')]
+     Input('custom-slider', 'value'),
+     Input('impact-option', 'value')]  # ← 추가!
 )
-def update_slider_and_image(date_str, slider_idx):
+def update_slider_and_image(date_str, slider_idx, impact_opt):
+    # 영향평가 체크 여부
+    impact_checked = 'impact' in impact_opt
+
+    # 파일 prefix 결정
+    prefix = "illum_risk_" if impact_checked else "illum_"
+
     # 1. 시간 리스트 생성 (20시~08시)
     date = datetime.fromisoformat(date_str)
     hours = list(range(20, 24)) + list(range(0, 9))
@@ -409,7 +481,7 @@ def update_slider_and_image(date_str, slider_idx):
         else:
             dt = datetime(date.year, date.month, date.day, h) + timedelta(days=1)
         key = dt.strftime("%Y%m%d%H")
-        label = dt.strftime("%H시")
+        label = dt.strftime("%H")
         time_labels.append(label)
         time_keys.append(key)
 
@@ -424,8 +496,8 @@ def update_slider_and_image(date_str, slider_idx):
         for subdir in subdirs:
             folder = os.path.join(clouds_root, subdir)
             for fname in os.listdir(folder):
-                if fname.startswith("illum_risk_") and fname.endswith(".png"):
-                    key = fname.replace("illum_risk_", "").replace(".png", "")
+                if fname.startswith(prefix) and fname.endswith(".png"):
+                    key = fname.replace(prefix, "").replace(".png", "")
                     if key not in image_map:
                         image_map[key] = os.path.join(folder, fname)
 
