@@ -9,16 +9,31 @@ from datetime import datetime, timedelta, timezone
 from calculate3 import get_illuminance_at, get_moon_altitude
 import pandas as pd
 import os
+import sys
 import subprocess
+
+# PyInstaller에서 리소스 파일 경로를 처리하는 함수
+def resource_path(relative_path):
+    """ PyInstaller에서 리소스 파일 경로를 처리 """
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller 실행 파일 내부의 리소스 경로
+        return os.path.join(sys._MEIPASS, relative_path)
+    # 개발 환경에서의 리소스 경로
+    return os.path.join(os.path.abspath("."), relative_path)
 
 # ========================
 # Constants & Config
 # ========================
 CITY_COORDS = {
     "서울": (37.5665, 126.9780),
-    "부산": (35.1796, 129.0756),
-    "대전": (36.3504, 127.3845),
-    "제주": (33.4996, 126.5312)
+    "흑산도": (34.6822, 125.4286),
+    "임자도": (35.0642, 126.0592),
+    "백령도": (37.9697, 124.6300),
+    "울릉도": (37.4847, 130.9053),
+    "연평도": (37.6667, 124.7000),
+    "마라도": (33.1172, 126.2672),
+    "거문도": (34.0181, 127.3081),
+    "소청도": (37.8036, 124.7372)
 }
 DATE_FORMAT = 'YYYY/MM/DD'
 
@@ -36,18 +51,18 @@ for h in release_hours:
     release_times.append(rt)
 tmfc_datetime = max(rt for rt in release_times if rt <= now_kst)
 tmfc_utc = tmfc_datetime.astimezone(timezone.utc)
-SHARED_DIR = os.path.join("assets", "clouds", tmfc_datetime.strftime("%Y%m%d%H"))
-SHARED_FILE = os.path.join(SHARED_DIR, f"clouds_all_{tmfc_datetime.strftime('%Y%m%d%H')}.csv")
+SHARED_DIR = resource_path(os.path.join("assets", "clouds", tmfc_datetime.strftime("%Y%m%d%H")))
+SHARED_FILE = resource_path(os.path.join(SHARED_DIR, f"clouds_all_{tmfc_datetime.strftime('%Y%m%d%H')}.csv"))
 
 # ========================
 # App Initialization
 # ========================
-app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app = Dash(__name__, external_stylesheets=[resource_path("assets/bootstrap.min.css")], serve_locally=True, suppress_callback_exceptions=True)
 
 # ========================
 # Layout
 # ========================
-app.layout = dbc.Container(
+main_layout = dbc.Container(
     [
         dbc.Row(
             [
@@ -61,7 +76,7 @@ app.layout = dbc.Container(
                                 options=[{'label': k, 'value': k} for k in CITY_COORDS],
                                 value='서울',
                                 clearable=False,
-                                style={'width': '80px'}
+                                style={'width': '100px'}
                             )
                         ],
                         size='md'
@@ -117,7 +132,7 @@ app.layout = dbc.Container(
                         size='md'
                     ),
                     width='auto'
-                )
+                ),
             ],
             justify='center',
             align='center',
@@ -147,6 +162,19 @@ app.layout = dbc.Container(
                 dbc.Col(
                     html.Span(id='ntl-label', style={'font-weight': 'bold'}),
                     width='auto'
+                ),
+                dbc.Col(
+                    html.A(
+                        dbc.Button(
+                            "테이블표",  # 버튼 텍스트
+                            id="table-button",  # 버튼 ID
+                            color="primary",  # 버튼 색상
+                            className="me-2"  # 오른쪽 여백
+                        ),
+                        href="/table",  # 새 창에서 열릴 URL
+                        target="_blank"  # 새 창에서 열리도록 설정
+                    ),
+                    width="auto"
                 )
             ],
             justify='center',
@@ -189,6 +217,15 @@ app.layout = dbc.Container(
     fluid=True
 )
 
+# 테이블 페이지 레이아웃
+table_layout = dbc.Container(
+    [
+        html.H2("조도값 테이블", className="my-4"),
+        html.Div(id="table-content"),  # 테이블 데이터를 동적으로 업데이트
+    ],
+    fluid=True
+)
+
 # ========================
 # Callbacks
 # ========================
@@ -201,7 +238,75 @@ app.layout = dbc.Container(
 def callback_update_coords(city):
     return CITY_COORDS.get(city, (37.5665, 126.9780))
 
-# ── 2. 그래프+NTL 라벨 업데이트 ────────────────────────────────
+# ── 2. 테이블 페이지로 이동 ────────────────────────────────
+# URL 라우팅 설정
+app.layout = html.Div(
+    [
+        dcc.Location(id="url", refresh=False),  # URL 변경 감지
+        html.Div(id="page-content"),  # 페이지 내용
+    ]
+)
+
+# URL에 따라 다른 레이아웃 표시
+@app.callback(
+    Output("page-content", "children"),
+    Input("url", "pathname")
+)
+def display_page(pathname):
+    if pathname == "/table":
+        return table_layout  # 테이블 페이지
+    else:
+        return main_layout  # 메인 페이지
+
+# ── 3. 테이블 버튼 클릭 → 테이블 데이터 업데이트 ────────────────
+# 테이블 데이터 생성 콜백
+@app.callback(
+    Output("table-content", "children"),
+    [Input("lat-input", "value"),
+     Input("lon-input", "value"),
+     Input("date-picker", "date")]
+)
+def update_table(lat, lon, date_str):
+    print(f"update_table 실행됨: lat={lat}, lon={lon}, date_str={date_str}")  # 콜백 실행 확인
+    if lat is None or lon is None or date_str is None:
+        return html.Div("위도, 경도, 날짜를 선택하세요.", style={"color": "red", "font-size": "1.5rem"})
+
+    try:
+        # 날짜 및 시간 범위 설정
+        date = datetime.fromisoformat(date_str)
+        start_time = datetime(date.year, date.month, date.day, 18, 0)  # 18시
+        end_time = start_time + timedelta(days=1, hours=2)  # 다음날 20시
+        times = [start_time + timedelta(hours=i) for i in range((end_time - start_time).seconds // 3600 + 1)]
+
+        # 조도값 계산
+        table_data = []
+        for t in times:
+            try:
+                r_light = get_illuminance_at(t.year, t.month, t.day, t.hour, t.minute, lat, lon)
+                print(f"시간: {t}, 조도값: {r_light}")  # 조도값 확인
+                table_data.append({"시간": t.strftime("%Y-%m-%d %H:%M"), "조도값 (R_lights)": round(r_light, 2)})
+            except Exception as e:
+                print(f"조도값 계산 중 오류 발생: {e}")
+                table_data.append({"시간": t.strftime("%Y-%m-%d %H:%M"), "조도값 (R_lights)": "오류"})
+
+        # 테이블 데이터 확인
+        print(f"테이블 데이터: {table_data}")
+
+        # 테이블 생성
+        table = dbc.Table.from_dataframe(
+            pd.DataFrame(table_data),
+            striped=True,
+            bordered=True,
+            hover=True,
+            responsive=True,
+        )
+        return table
+
+    except Exception as e:
+        print(f"테이블 생성 중 오류 발생: {e}")
+        return html.Div("테이블 데이터를 생성하는 중 오류가 발생했습니다.", style={"color": "red", "font-size": "1.5rem"})
+    
+# ── 4. 그래프+NTL 라벨 업데이트 ────────────────────────────────
 @app.callback(
     [Output('combined-graph', 'figure'),
      Output('ntl-label', 'children')],
@@ -220,7 +325,7 @@ def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
     times_utc  = [start_utc + timedelta(minutes=10 * i) for i in range(((23 - 9) * 60 // 10) + 1)]
 
     # 1. TMFC 폴더 최신순 정렬
-    clouds_root = os.path.join("assets", "clouds")
+    clouds_root = resource_path("assets/clouds")
     subdirs = sorted(
         [d for d in os.listdir(clouds_root) if os.path.isdir(os.path.join(clouds_root, d))],
         reverse=True
@@ -510,9 +615,12 @@ def update_slider_and_image(date_str, slider_idx, impact_opt):
     # 4. 이미지 파일 경로 (가장 최근 폴더 기준)
     img_key = time_keys[value]
     img_path = image_map.get(img_key)
+
     if img_path and os.path.exists(img_path):
+        # src 경로를 /assets/... 형식으로 설정
+        relative_path = os.path.relpath(img_path, "assets")
         img_div = html.Div(
-            html.Img(src=f"/{img_path.replace(os.sep, '/')}", style={'width': '100%', 'max-width': '400px'}),
+            html.Img(src=f"/assets/{relative_path.replace(os.sep, '/')}", style={'width': '100%', 'max-width': '400px'}),
             style={'display': 'flex', 'justifyContent': 'center'}
         )
     else:
@@ -534,10 +642,8 @@ def update_slider_and_image(date_str, slider_idx, impact_opt):
 # Run Server
 # ========================
 if __name__ == "__main__":
-    if not os.path.exists(SHARED_FILE):
-        os.makedirs(SHARED_DIR, exist_ok=True)
-        try:
-            subprocess.run(["python", "cloud_api.py"], check=True)
-        except Exception as e:
-            print("Failed to generate cloud CSV:", e)
     app.run(debug=True)
+    input("Press Enter to exit...")
+
+# To create a standalone executable with PyInstaller, use the following command:
+#pyinstaller --onefile --add-data "assets;assets" --add-data "C:/Users/Jond Doe/AppData/Local/Programs/Python/Python313/Lib/site-packages/dash/dash-renderer/build/*;dash/dash-renderer/build" --add-data "C:/Users/Jond Doe/AppData/Local/Programs/Python/Python313/Lib/site-packages/plotly/package_data/plotly.min.js;plotly/package_data" --hidden-import "numpy" --hidden-import "skyfield" app.py
