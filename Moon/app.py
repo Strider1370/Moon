@@ -1,508 +1,649 @@
-# app.py
-
-import dash
-from dash import dcc, html, Output, Input, State, dash_table
+# ========================
+# Imports
+# ========================
+from dash import Dash, html, dcc, Input, Output, State
 import dash_bootstrap_components as dbc
+import plotly.graph_objs as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta, timezone
+from calculate3 import get_illuminance_at, get_moon_altitude
 import pandas as pd
-from astronomy.output import calculate_and_collect_data
-from datetime import datetime, timedelta
-from dash.exceptions import PreventUpdate
-import urllib.parse
 import os
+import sys
+import subprocess
 
-# 상수 정의
-TIMEZONE_OFFSET = 9  # KST는 UTC+9
+# PyInstaller에서 리소스 파일 경로를 처리하는 함수
+def resource_path(relative_path):
+    """ PyInstaller에서 리소스 파일 경로를 처리 """
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller 실행 파일 내부의 리소스 경로
+        return os.path.join(sys._MEIPASS, relative_path)
+    # 개발 환경에서의 리소스 경로
+    return os.path.join(os.path.abspath("."), relative_path)
 
-# 도시별 위도, 경도 정보
-city_coordinates = {
-    'Seoul': {'lat': 37.5665, 'lon': 126.9780},
-    'Daejeon': {'lat': 36.3504, 'lon': 127.3845},
-    'Gangneung': {'lat': 37.7519, 'lon': 128.8761},
-    'Busan': {'lat': 35.1796, 'lon': 129.0756},
-    'Mokpo': {'lat': 34.8118, 'lon': 126.3922}
+# ========================
+# Constants & Config
+# ========================
+CITY_COORDS = {
+    "서울": (37.5665, 126.9780),
+    "흑산도": (34.6822, 125.4286),
+    "임자도": (35.0642, 126.0592),
+    "백령도": (37.9697, 124.6300),
+    "울릉도": (37.4847, 130.9053),
+    "연평도": (37.6667, 124.7000),
+    "마라도": (33.1172, 126.2672),
+    "거문도": (34.0181, 127.3081),
+    "소청도": (37.8036, 124.7372)
 }
+DATE_FORMAT = 'YYYY/MM/DD'
 
-# Dash 애플리케이션 초기화
-app = dash.Dash(
-    __name__,
-    suppress_callback_exceptions=True,
-    external_stylesheets=[dbc.themes.BOOTSTRAP],
-    title='달빛천사 0.3'
-)
-server = app.server
+# ========================
+# Time & File Setup
+# ========================
+kst = timezone(timedelta(hours=9))
+now_kst = datetime.now(timezone.utc).astimezone(kst)
+release_hours = [2, 5, 8, 11, 14, 17, 20, 23]
+release_times = []
+for h in release_hours:
+    rt = now_kst.replace(hour=h, minute=0, second=0, microsecond=0)
+    if rt > now_kst:
+        rt -= timedelta(days=1)
+    release_times.append(rt)
+tmfc_datetime = max(rt for rt in release_times if rt <= now_kst)
+tmfc_utc = tmfc_datetime.astimezone(timezone.utc)
+SHARED_DIR = resource_path(os.path.join("assets", "clouds", tmfc_datetime.strftime("%Y%m%d%H")))
+SHARED_FILE = resource_path(os.path.join(SHARED_DIR, f"clouds_all_{tmfc_datetime.strftime('%Y%m%d%H')}.csv"))
 
-# 공통 스타일 정의
-input_style = {'width': '150px'}
-common_button_style = {'margin-top': '25px'}
+# ========================
+# App Initialization
+# ========================
+app = Dash(__name__, external_stylesheets=[resource_path("assets/bootstrap.min.css")], serve_locally=True, suppress_callback_exceptions=True)
 
-# 헬퍼 함수 정의
-def create_input_col(label_text, input_component):
-    return dbc.Col([
-        dbc.Label(label_text),
-        input_component
-    ], width="auto")
-
-def parse_inputs(selected_date, latitude, longitude):
-    try:
-        date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
-        latitude = float(latitude)
-        longitude = float(longitude)
-        return date_obj, latitude, longitude
-    except (ValueError, TypeError):
-        return None, None, None
-
-def get_calculated_data(selected_date, latitude, longitude, timezone_offset=TIMEZONE_OFFSET):
-    date_obj, latitude, longitude = parse_inputs(selected_date, latitude, longitude)
-    if date_obj is None:
-        return None
-    data = calculate_and_collect_data(
-        year=date_obj.year,
-        month=date_obj.month,
-        day=date_obj.day,
-        timezone_offset=timezone_offset,
-        latitude=latitude,
-        longitude=longitude
-    )
-    return data
-
-# 도시 옵션 동적 생성
-city_options = [{'label': city, 'value': city} for city in city_coordinates.keys()]
-
-# 메인 페이지 레이아웃 정의
-main_layout = dbc.Container([
-    dbc.Row([
-        dbc.Col(html.H1("달빛천사 0.3", className="text-start my-4"), width=3),
-        dbc.Col([
-            dbc.Row([
-                # City 드롭다운
-                create_input_col("City", dcc.Dropdown(
-                    id='city-dropdown',
-                    options=city_options,
-                    value='Seoul',
-                    className='mb-2',
-                    style=input_style
-                )),
-                # Latitude 입력
-                create_input_col("Latitude", dbc.Input(
-                    id='latitude-input',
-                    placeholder='Enter Latitude',
-                    type='number',
-                    value=city_coordinates['Seoul']['lat'],
-                    style=input_style
-                )),
-                # Longitude 입력
-                create_input_col("Longitude", dbc.Input(
-                    id='longitude-input',
-                    placeholder='Enter Longitude',
-                    type='number',
-                    value=city_coordinates['Seoul']['lon'],
-                    style=input_style
-                )),
-                # Date 라벨과 입력창, 그리고 날짜 조정 버튼
-                dbc.Col([
-                    dbc.Label("Date", className="d-block"),
-                    dbc.InputGroup([
-                        dbc.Button("<", id='prev-day-button', n_clicks_timestamp=0),
-                        dcc.DatePickerSingle(
-                            id='date-picker',
-                            min_date_allowed=datetime(2000, 1, 1),
-                            max_date_allowed=datetime(2100, 12, 31),
-                            initial_visible_month=datetime.today(),
-                            date=datetime.today().strftime('%Y-%m-%d'),
-                            display_format='YYYY-MM-DD',
-                            className='mx-auto',
-                            style=input_style
-                        ),
-                        dbc.Button(">", id='next-day-button', n_clicks_timestamp=0),
-                    ], size="sm")
-                ], width="auto", className="d-flex align-items-center"),
-            ])
-        ])
-    ]),
-    dbc.Row([
-        dbc.Col([
-            html.A(
-                dbc.Button(
-                    "timetable",
-                    id='timetable-button',
-                    className='btn btn-secondary'
+# ========================
+# Layout
+# ========================
+main_layout = dbc.Container(
+    [
+        dbc.Row(
+            [
+                # ── 도시 드롭다운 ──────────────────────────────────
+                dbc.Col(
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("도시"),
+                            dcc.Dropdown(
+                                id='city-dropdown',
+                                options=[{'label': k, 'value': k} for k in CITY_COORDS],
+                                value='서울',
+                                clearable=False,
+                                style={'width': '100px'}
+                            )
+                        ],
+                        size='md'
+                    ),
+                    width='auto'
                 ),
-                href="#",
-                id='timetable-link',
-                target='_blank'
-            ),
-            # 'clouds' 버튼 추가
-            dbc.Button(
-                "clouds",
-                id='clouds-button',
-                className='btn btn-secondary ml-2'
-            )
-        ], width=12, className="mt-3 d-flex justify-content-start")
-    ], className='mb-2'),
-    # 그래프 및 이미지 표시 영역에 로딩 스피너 추가
-    dbc.Row([
-        dbc.Col([
-            dcc.Loading(
-                id='loading-graph',
-                type='circle',
-                children=[
-                    dcc.Graph(id='esurface-graph'),
-                    dcc.Graph(id='moon-elevation-graph'),
-                    html.Div(id='clouds-animation-container', style={'textAlign': 'center', 'marginTop': '20px'})
-                ]
-            )
-        ], width=12)
-    ], className='mt-4'),
-], fluid=True)
 
-# 타임테이블 페이지 레이아웃
-timetable_layout = dbc.Container([
-    dbc.Row([
-        dbc.Col([
-            html.H2("Timetable", className="text-center my-4"),
-            html.Div(id='selected-date', className="text-center mb-4")
-        ])
-    ]),
-    dbc.Row([
-        dbc.Col([
-            dcc.Loading(
-                id='loading-table',
-                type='circle',
-                children=[html.Div(id='timetable-table')]
-            )
-        ])
-    ])
-], fluid=True)
+                # ── 위도 입력 ────────────────────────────────────
+                dbc.Col(
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("위도"),
+                            dbc.Input(
+                                id='lat-input', type='number',
+                                step=0.0001, style={'width': '100px'}
+                            )
+                        ],
+                        size='md'
+                    ),
+                    width='auto'
+                ),
 
-# 애니메이션 페이지 레이아웃 (슬라이더 및 이미지)
-clouds_layout = dbc.Container([
-    dbc.Row([
-        dbc.Col([
-            html.H2("Clouds Visualization", className="text-center my-4")
-        ])
-    ]),
-    dbc.Row([
-        dbc.Col([
-            dcc.Slider(
-                id='image-slider',
-                min=0,
-                max=23,
-                step=1,
-                value=0,
-                marks={i: f"{i+1}" for i in range(24)},
-                tooltip={"placement": "bottom", "always_visible": True}
-            ),
-            html.Img(id='cloud-image', src='', style={'width': '30%', 'height': 'auto', 'marginTop': '20px'}),  # 이미지 크기 조정
-            html.Div(id='image-caption', className='text-center mt-2')
-        ], width=12)
-    ], className='mt-4')
-], fluid=True)
+                # ── 경도 입력 (기존) ────────────────────────────────
+                dbc.Col(
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("경도"),
+                            dbc.Input(
+                                id='lon-input', type='number',
+                                step=0.0001, style={'width' : '100px'}
+                            )
+                        ],
+                        size='md'
+                    ),
+                    width='auto'
+                ),
 
-# 애플리케이션 레이아웃 정의
-app.layout = html.Div([
-    dcc.Location(id='url', refresh=False),
-    html.Div(id='page-content')
-])
+                # ──── 날짜: 화살표 버튼 제거 + 상단 라벨 ────
+                dbc.Col(
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("날짜"),
+                            dcc.DatePickerSingle(
+                                id='date-picker',
+                                className='dp-md',          # ← 위 CSS가 적용될 대상
+                                date=now_kst.date(),
+                                display_format=DATE_FORMAT,
+                                min_date_allowed=datetime(2000, 1, 1),
+                                max_date_allowed=datetime(2100, 12, 31),
+                                style={'width': '100px'}    # 숫자 입력과 폭 맞추기
+                            )
+                        ],
+                        size='md'
+                    ),
+                    width='auto'
+                ),
+            ],
+            justify='center',
+            align='center',
+            className='my-3'
+        ),
 
-# 페이지 내용 업데이트 콜백
+        dbc.Row(
+            [
+                dbc.Col(
+                    dcc.Checklist(
+                        id='cloud-option',
+                        options=[{'label': '구름 데이터', 'value': 'clouds'}],
+                        value=[],
+                        labelStyle={'margin-right': '1rem'}
+                    ),
+                    width='auto'
+                ),
+                dbc.Col(
+                    dcc.Checklist(
+                        id='impact-option',
+                        options=[{'label': '영향평가', 'value': 'impact'}],
+                        value=[],
+                        labelStyle={'margin-right': '1rem'}
+                    ),
+                    width='auto'
+                ),
+                dbc.Col(
+                    html.Span(id='ntl-label', style={'font-weight': 'bold'}),
+                    width='auto'
+                ),
+                dbc.Col(
+                    html.A(
+                        dbc.Button(
+                            "테이블표",  # 버튼 텍스트
+                            id="table-button",  # 버튼 ID
+                            color="primary",  # 버튼 색상
+                            className="me-2"  # 오른쪽 여백
+                        ),
+                        href="/table",  # 새 창에서 열릴 URL
+                        target="_blank"  # 새 창에서 열리도록 설정
+                    ),
+                    width="auto"
+                )
+            ],
+            justify='center',
+            align='center',
+            className='mb-4'
+        ),
+
+        dbc.Row(
+            [
+                # 왼쪽 1/3: 슬라이더 및 (향후) 이미지
+                dbc.Col(
+                    [
+                        html.Div(
+                            [
+                                html.Label("조도-이미지", style={'font-weight': 'bold'}),
+                                dcc.Slider(
+                                    id='custom-slider',
+                                    min=0,
+                                    max=12,
+                                    step=1,
+                                    value=0,
+                                    marks={}  # 콜백에서 동적으로 설정
+                                                                    ),
+                                # 향후 이미지 추가 위치
+                                html.Div(id='image-placeholder', style={'margin-top': '2rem'})
+                            ],
+                            style={'padding': '2rem'}
+                        )
+                    ],
+                    width=4  # 12분할 기준 4/12 = 1/3
+                ),
+                # 오른쪽 2/3: 그래프
+                dbc.Col(
+                    dcc.Graph(id='combined-graph'),
+                    width=8  # 12분할 기준 8/12 = 2/3
+                )
+            ]
+        )
+    ],
+    fluid=True
+)
+
+# 테이블 페이지 레이아웃
+table_layout = dbc.Container(
+    [
+        html.H2("조도값 테이블", className="my-4"),
+        html.Div(id="table-content"),  # 테이블 데이터를 동적으로 업데이트
+    ],
+    fluid=True
+)
+
+# ========================
+# Callbacks
+# ========================
+
+# ── 1. 도시 선택 → 위·경도 자동 입력 ────────────────────────────
 @app.callback(
-    Output('page-content', 'children'),
-    [Input('url', 'pathname')]
+    [Output('lat-input', 'value'), Output('lon-input', 'value')],
+    Input('city-dropdown', 'value')
+)
+def callback_update_coords(city):
+    return CITY_COORDS.get(city, (37.5665, 126.9780))
+
+# ── 2. 테이블 페이지로 이동 ────────────────────────────────
+# URL 라우팅 설정
+app.layout = html.Div(
+    [
+        dcc.Location(id="url", refresh=False),  # URL 변경 감지
+        html.Div(id="page-content"),  # 페이지 내용
+    ]
+)
+
+# URL에 따라 다른 레이아웃 표시
+@app.callback(
+    Output("page-content", "children"),
+    Input("url", "pathname")
 )
 def display_page(pathname):
-    if pathname.startswith('/timetable'):
-        return timetable_layout
-    elif pathname.startswith('/clouds'):
-        return clouds_layout
+    if pathname == "/table":
+        return table_layout  # 테이블 페이지
     else:
-        return main_layout
+        return main_layout  # 메인 페이지
 
-# 도시 선택 시 위도와 경도 자동 업데이트 콜백
+# ── 3. 테이블 버튼 클릭 → 테이블 데이터 업데이트 ────────────────
+# 테이블 데이터 생성 콜백
 @app.callback(
-    [Output('latitude-input', 'value'),
-     Output('longitude-input', 'value')],
-    [Input('city-dropdown', 'value')]
+    Output("table-content", "children"),
+    [Input("lat-input", "value"),
+     Input("lon-input", "value"),
+     Input("date-picker", "date")]
 )
-def update_lat_lon(city):
-    if city in city_coordinates:
-        return city_coordinates[city]['lat'], city_coordinates[city]['lon']
-    return dash.no_update, dash.no_update
+def update_table(lat, lon, date_str):
+    print(f"update_table 실행됨: lat={lat}, lon={lon}, date_str={date_str}")  # 콜백 실행 확인
+    if lat is None or lon is None or date_str is None:
+        return html.Div("위도, 경도, 날짜를 선택하세요.", style={"color": "red", "font-size": "1.5rem"})
 
-# 날짜 조정 버튼 클릭 시 날짜 선택기 업데이트 콜백
-@app.callback(
-    Output('date-picker', 'date'),
-    [Input('prev-day-button', 'n_clicks_timestamp'),
-     Input('next-day-button', 'n_clicks_timestamp')],
-    [State('date-picker', 'date')]
-)
-def update_date(prev_ts, next_ts, selected_date):
-    if not selected_date:
-        selected_date = datetime.today()
-    else:
-        selected_date = datetime.strptime(selected_date, '%Y-%m-%d')
-
-    if not prev_ts and not next_ts:
-        raise PreventUpdate
-
-    if (prev_ts or 0) > (next_ts or 0):
-        updated_date = selected_date - timedelta(days=1)
-    else:
-        updated_date = selected_date + timedelta(days=1)
-
-    # 날짜 범위 제한
-    min_date = datetime(2000, 1, 1)
-    max_date = datetime(2100, 12, 31)
-    updated_date = max(min_date, min(updated_date, max_date))
-
-    return updated_date.strftime('%Y-%m-%d')
-
-# 메인 페이지의 'Timetable' 링크 업데이트 콜백
-@app.callback(
-    Output('timetable-link', 'href'),
-    [Input('date-picker', 'date'),
-     Input('latitude-input', 'value'),
-     Input('longitude-input', 'value')]
-)
-def update_timetable_link(selected_date, latitude, longitude):
-    if not selected_date:
-        return "#"
-
-    date_obj, latitude, longitude = parse_inputs(selected_date, latitude, longitude)
-    if date_obj is None:
-        return "#"
-
-    # 쿼리 파라미터 설정
-    query_params = {
-        'date': selected_date,
-        'latitude': latitude,
-        'longitude': longitude,
-        'timezone_offset': TIMEZONE_OFFSET
-    }
-    query_string = urllib.parse.urlencode(query_params)
-    return f"/timetable?{query_string}"
-
-# 타임테이블 페이지에서 테이블과 날짜 표시 콜백
-@app.callback(
-    [Output('selected-date', 'children'),
-     Output('timetable-table', 'children')],
-    [Input('url', 'search')]
-)
-def update_timetable_table(search):
-    if not search:
-        return "", dbc.Alert("필요한 파라미터가 없습니다.", color="danger")
-
-    # 쿼리 파라미터 파싱
-    params = urllib.parse.parse_qs(search.lstrip('?'))
     try:
-        selected_date = params['date'][0]
-        latitude = float(params['latitude'][0])
-        longitude = float(params['longitude'][0])
-        timezone_offset = float(params['timezone_offset'][0])
-    except (KeyError, ValueError, IndexError):
-        return "", dbc.Alert("잘못된 파라미터입니다.", color="danger")
+        # 날짜 및 시간 범위 설정
+        date = datetime.fromisoformat(date_str)
+        start_time = datetime(date.year, date.month, date.day, 18, 0)  # 18시
+        end_time = start_time + timedelta(days=1, hours=2)  # 다음날 20시
+        times = [start_time + timedelta(hours=i) for i in range((end_time - start_time).seconds // 3600 + 1)]
 
-    # 데이터 계산 및 수집
-    data = get_calculated_data(selected_date, latitude, longitude, timezone_offset)
+        # 조도값 계산
+        table_data = []
+        for t in times:
+            try:
+                r_light = get_illuminance_at(t.year, t.month, t.day, t.hour, t.minute, lat, lon)
+                print(f"시간: {t}, 조도값: {r_light}")  # 조도값 확인
+                table_data.append({"시간": t.strftime("%Y-%m-%d %H:%M"), "조도값 (R_lights)": round(r_light, 2)})
+            except Exception as e:
+                print(f"조도값 계산 중 오류 발생: {e}")
+                table_data.append({"시간": t.strftime("%Y-%m-%d %H:%M"), "조도값 (R_lights)": "오류"})
 
-    if not data:
-        return f"Selected Date: {selected_date}", dbc.Alert("데이터를 계산할 수 없습니다.", color="danger")
+        # 테이블 데이터 확인
+        print(f"테이블 데이터: {table_data}")
 
-    # DataFrame으로 변환
-    df = pd.DataFrame(data)
+        # 테이블 생성
+        table = dbc.Table.from_dataframe(
+            pd.DataFrame(table_data),
+            striped=True,
+            bordered=True,
+            hover=True,
+            responsive=True,
+        )
+        return table
 
-    # 'Local Time' 포맷 수정
-    if 'Local Time' in df.columns:
-        df['Local Time'] = df['Local Time'].astype(str) + ' KST'
-
-    # 테이블 생성 (페이지네이션 적용)
-    table = dash_table.DataTable(
-        columns=[{"name": i, "id": i} for i in df.columns],
-        data=df.to_dict('records'),
-        fixed_rows={'headers': True},
-        page_size=120,
-        style_table={
-            'height': '100%',
-            'overflowY': 'auto',
-            'width': '100%',
-            'minWidth': '100%',
-        },
-        style_cell={
-            'textAlign': 'center',
-            'minWidth': '100px',
-            'width': '100px',
-            'maxWidth': '100px',
-            'whiteSpace': 'normal',
-        },
-        style_header={
-            'backgroundColor': 'rgb(230, 230, 230)',
-            'fontWeight': 'bold',
-        },
-    )
-
-    # 선택한 날짜 표시
-    formatted_date = f"Selected Date: {selected_date}"
-
-    return formatted_date, table
-
-# 메인 페이지에서 그래프를 업데이트하는 콜백
-@app.callback(
-    [Output('esurface-graph', 'figure'),
-     Output('moon-elevation-graph', 'figure')],
-    [Input('date-picker', 'date'),
-     Input('latitude-input', 'value'),
-     Input('longitude-input', 'value')]
-)
-def update_graphs(selected_date, latitude, longitude):
-    if not selected_date or latitude is None or longitude is None:
-        raise PreventUpdate
-
-    data = get_calculated_data(selected_date, latitude, longitude)
-    if not data:
-        return {'data': [], 'layout': {}}, {'data': [], 'layout': {}}
-
-    df = pd.DataFrame(data)
-    if 'E_surface (millilux)' not in df.columns or 'Local Time' not in df.columns:
-        return {'data': [], 'layout': {}}, {'data': [], 'layout': {}}
-
-    df['E_surface (millilux)'] = pd.to_numeric(df['E_surface (millilux)'], errors='coerce')
-    df['Local Time'] = pd.to_datetime(df['Local Time'], format='%Y-%m-%d %H:%M')
-
-    # x축 범위를 설정하기 위해 시작 시간과 종료 시간을 지정
-    start_time = df['Local Time'].iloc[0]
-    end_time = df['Local Time'].iloc[-1]
-  
-    traces = [{
-        'x': df['Local Time'],
-        'y': df['E_surface (millilux)'] + 0.5,  
-        'type': 'line',
-        'name': 'E_surface (millilux)',  # 그래프 레이블
-        'marker': {'color': 'blue'}  # 기본 색상 설정
-    }]
-
-    fig = {
-        'data': traces,
-        'layout': {
-            'title': 'Nighttime Illuminance by sun and moon',
-            'xaxis': {
-                'title': 'Time (KST)',
-                'tickformat': '%H:%M',
-                'tickmode': 'linear',
-                'dtick': 3600000 * 2,  # 2시간 간격
-                'range': [start_time, end_time]
-            },
-            'yaxis': {
-                'title': 'Illuminance (millilux)',
-                'type': 'log',
-                'range': [-1, 3],
-                'tickvals': [0.1, 1, 10, 100, 1000],
-                'ticktext': ['0.1', '1', '10', '100', '1000'],
-                'autorange': False,
-                'cliponaxis': False
-            },
-            'legend': {
-                'orientation': 'h',
-                'yanchor': 'bottom',
-                'y': -0.3,
-                'xanchor': 'center',
-                'x': 0.5
-            },
-            'margin': {'l': 50, 'r': 20, 't': 50, 'b': 80},
-            'height': 400
-        }
-    }
-
-    # 두 번째 그래프 생성 코드
-    if 'Moon Alt (°)' not in df.columns:
-        return fig, {'data': [], 'layout': {}}
-
-    df['Moon Alt (°)'] = pd.to_numeric(df['Moon Alt (°)'], errors='coerce')
-
-    moon_fig = {
-        'data': [{
-            'x': df['Local Time'],
-            'y': df['Moon Alt (°)'],
-            'type': 'line',
-            'name': 'Moon Elevation',
-            'marker': {'color': 'black'}
-        }],
-        'layout': {
-            'title': 'Moon Elevation',
-            'xaxis': {
-                'title': 'Time (KST)',
-                'tickformat': '%H:%M',
-                'tickmode': 'linear',
-                'dtick': 3600000 * 2,  # 2시간 간격
-                'range': [start_time, end_time]
-            },
-            'yaxis': {
-                'title': 'Moon Elevation (°)',
-                'range': [0, 90],
-                'autorange': False,
-                'tickvals': [0, 30, 60, 90],
-                'ticktext': ['0', '30', '60', '90']
-            },
-            'margin': {'l': 50, 'r': 20, 't': 50, 'b': 80},
-            'height': 400
-        }
-    }
-
-    return fig, moon_fig
-
-# 슬라이더를 사용하여 이미지 인덱스를 선택하고 이미지 표시 콜백
-@app.callback(
-    [Output('cloud-image', 'src'),
-     Output('image-caption', 'children')],
-    [Input('image-slider', 'value')]
-)
-def update_cloud_image(slider_value):
-    # 이미지 파일 리스트 가져오기
-    image_dir = 'assets/cloud_images'
+    except Exception as e:
+        print(f"테이블 생성 중 오류 발생: {e}")
+        return html.Div("테이블 데이터를 생성하는 중 오류가 발생했습니다.", style={"color": "red", "font-size": "1.5rem"})
     
-    # 파일 이름에서 숫자 부분을 추출하여 정렬
-    image_files = sorted(
-        [f for f in os.listdir(image_dir) if f.startswith('cloud_') and f.endswith('.png')],
-        key=lambda x: int(x.split('_')[1].split('.')[0])
+# ── 4. 그래프+NTL 라벨 업데이트 ────────────────────────────────
+@app.callback(
+    [Output('combined-graph', 'figure'),
+     Output('ntl-label', 'children')],
+    [Input('lat-input',   'value'),
+     Input('lon-input',   'value'),
+     Input('date-picker', 'date'),
+     Input('cloud-option','value'),
+     Input('impact-option','value')]
+)
+
+def callback_update_graph(lat, lon, date_str, cloud_opt, impact_opt):
+    show_cloud = 'clouds' in cloud_opt
+    show_impact = 'impact' in impact_opt
+    date = datetime.fromisoformat(date_str)
+    start_utc  = datetime(date.year, date.month, date.day, 9, 0, tzinfo=timezone.utc)
+    times_utc  = [start_utc + timedelta(minutes=10 * i) for i in range(((23 - 9) * 60 // 10) + 1)]
+
+    # 1. TMFC 폴더 최신순 정렬
+    clouds_root = resource_path("assets/clouds")
+    subdirs = sorted(
+        [d for d in os.listdir(clouds_root) if os.path.isdir(os.path.join(clouds_root, d))],
+        reverse=True
+    )
+    # 2. TMFC별로 csv 미리 읽기
+    csv_dfs = {}
+    for subdir in subdirs:
+        csv_path = os.path.join(clouds_root, subdir, f"clouds_all_{subdir}.csv")
+        if os.path.exists(csv_path):
+            try:
+                csv_dfs[subdir] = pd.read_csv(csv_path)
+            except Exception:
+                continue
+
+    # 3. ntl은 최신 TMFC에서 한 번만 읽기
+    ntl = 0
+    for subdir in subdirs:
+        df = csv_dfs.get(subdir)
+        if df is not None and lat is not None and lon is not None:
+            latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+            row = df.loc[((df[latc] - lat)**2 + (df[lonc] - lon)**2).idxmin()]
+            ntl = int(row.get('ntl', row.get('NTL', 0)))
+            break
+
+    # 4. 각 시간대별로 최신 TMFC에서 구름값 찾기
+    cloud_val_map = {}
+    for t in times_utc:
+        col = (t + timedelta(hours=9)).strftime("%Y%m%d%H")
+        for subdir in subdirs:
+            df = csv_dfs.get(subdir)
+            if df is not None and col in df.columns and lat is not None and lon is not None:
+                latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+                row = df.loc[((df[latc] - lat)**2 + (df[lonc] - lon)**2).idxmin()]
+                cloud_val_map[col] = row[col]
+                break
+        else:
+            cloud_val_map[col] = None
+
+    # 5. 기존 조도 계산 루프에서 cloud_val_map 사용
+    illum_vals, moon_alts, cloud_lbls = [], [], []
+    # 1. 모든 구름 데이터 컬럼(3시간 간격) 리스트 만들기
+    cloud_cols = []
+    for subdir in subdirs:
+        df = csv_dfs.get(subdir)
+        if df is not None:
+            latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+            for col in df.columns:
+                if col.isdigit() and len(col) == 10:  # YYYYMMDDHH 형식
+                    cloud_cols.append(col)
+    cloud_cols = sorted(set(cloud_cols))
+
+    # 2. 각 10분 단위 시간에 대해 가장 가까운 구름 컬럼 찾기
+    def find_nearest_cloud_col(t_kst, cloud_cols):
+        # t_kst: datetime (KST, offset-aware)
+        t_strs = [col for col in cloud_cols]
+        t_dts = [datetime.strptime(col, "%Y%m%d%H").replace(tzinfo=kst) for col in t_strs]  # ← 수정
+        diffs = [abs((t_kst - dt).total_seconds()) for dt in t_dts]
+        idx = diffs.index(min(diffs))
+        return t_strs[idx]
+
+    # 3. 기존 루프에서 적용
+    for t in times_utc:
+        t_kst = t + timedelta(hours=9)
+        lux = get_illuminance_at(t.year, t.month, t.day, t.hour, t.minute, lat, lon)
+        ml  = lux * 1000 + 1
+        lbl = '데이터 없음'
+        if show_cloud and cloud_cols:
+            nearest_col = find_nearest_cloud_col(t_kst, cloud_cols)
+            # 최신 TMFC부터 탐색
+            for subdir in subdirs:
+                df = csv_dfs.get(subdir)
+                if df is not None and nearest_col in df.columns and lat is not None and lon is not None:
+                    latc, lonc = ('lat', 'lon') if 'lat' in df.columns else ('latitude', 'longitude')
+                    row = df.loc[((df[latc] - lat)**2 + (df[lonc] - lon)**2).idxmin()]
+                    cloud_val = row[nearest_col]
+                    ml  *= {1: 1.0, 3: 0.5, 4: 0.2}.get(cloud_val, 1)
+                    lbl = {1: '맑음', 3: '구름 많음', 4: '흐림'}.get(cloud_val, '데이터없음')
+                    break
+        illum_vals.append(ml)
+        moon_alts.append(get_moon_altitude(t.year, t.month, t.day, t.hour, t.minute, lat, lon))
+        cloud_lbls.append(lbl)
+
+    # KST 라벨 및 1 시간 간격 추출
+    times_kst    = [(t + timedelta(hours=9)).strftime('%H:%M') for t in times_utc]
+    hourly_idx   = [i for i, t in enumerate(times_utc) if t.minute == 0]
+    hourly_times = [times_kst[i]    for i in hourly_idx]
+    hourly_illum = [illum_vals[i]   for i in hourly_idx]
+    hourly_moon  = [moon_alts[i]    for i in hourly_idx]
+    hourly_cloud = [cloud_lbls[i]   for i in hourly_idx]
+    colors_10min = ['red' if v<=50 else 'orange' if v<=100 else 'yellow' if v<=200 else 'green'
+                    for v in illum_vals]
+
+    # 2시간 간격 라벨 생성
+    twohour_idx = [i for i, t in enumerate(times_utc) if t.minute == 0 and (t.hour % 2 == 0)]
+    twohour_times = [times_kst[i] for i in twohour_idx]
+
+    # 위험도 색상 분기
+    if show_impact:
+        colors_10min = ['red' if v<=50 else 'orange' if v<=100 else 'yellow' if v<=200 else 'green'
+                        for v in illum_vals]
+    else:
+        colors_10min = ['#b3e6ff'] * len(illum_vals)  # 단일색(밝은 파랑 등)
+
+    # ===============================================================
+    # ② 첫번째 그래프 ─ 조도(mlux)
+    #     • 배경 막대 : 10 분 위험등급
+    #     • 선 그래프 : 10 분 조도
+    #     • 마커      : 1 시간 조도(+구름 툴팁)
+    # ===============================================================
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=False, vertical_spacing=0.1)
+
+    # show_bg: 배경 막대 표시 여부 (구름 옵션과 동일하게)
+    show_bg = show_impact
+
+    # (a) 배경 막대
+    fig.add_trace(
+        go.Bar(
+            x=times_kst, y=[1000]*len(times_kst),
+            marker_color=colors_10min, opacity=0.5, marker_line_width=0,
+            width=1, showlegend=False, visible=show_bg, hoverinfo='skip'
+        ), row=1, col=1
     )
 
-    if not image_files:
-        return '', '이미지를 찾을 수 없습니다.'
+    # (b) 10 분 선 그래프
+    fig.add_trace(
+        go.Scatter(
+            x=times_kst, y=illum_vals, mode='lines',
+            line=dict(color='#1f77b4'), hoverinfo='skip', showlegend=False
+        ), row=1, col=1
+    )
 
-    if slider_value < 0 or slider_value >= len(image_files):
-        return '', '잘못된 이미지 인덱스입니다.'
+    # --- 2.2 mlux 기준선 -------------------------------------------
+    fig.add_hline(
+        y=2.2,                       # y 값
+        line_dash='longdash',             # 점선
+        line_color='red',
+        row=1, col=1                 # 첫 번째 그래프에만
+    )
 
-    image_filename = image_files[slider_value]
-    image_src = app.get_asset_url(f'cloud_images/{image_filename}')
+    # (c) 1 시간 마커
+    fig.add_trace(
+        go.Scatter(
+            x=hourly_times, y=hourly_illum, mode='markers',
+            marker=dict(color='#1f77b4', size=6),
+            customdata=hourly_cloud,
+            hovertemplate=('시간: %{x}<br>조도: %{y:.2f} mlux'
+                           + ('<br>구름: %{customdata}' if show_cloud else '')
+                           + '<extra></extra>'),
+            showlegend=False
+        ), row=1, col=1
+    )
 
-    # tmef_list 불러오기
-    tmef_list_path = os.path.join(image_dir, 'tmef_list.txt')
-    if not os.path.exists(tmef_list_path):
-        return image_src, 'tmef_list 파일이 존재하지 않습니다.'
+    # 위험도 범례
+    if show_impact:
+        for name, color in {'위험':'red','경고':'orange','주의':'yellow','안전':'green'}.items():
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
+                                     marker=dict(color=color, size=14),
+                                     name=name, visible=show_bg))
 
-    with open(tmef_list_path, 'r') as f:
-        tmef_list = [line.strip() for line in f]
+    # ===============================================================
+    # ③ 두번째 그래프 ─ 달 고도(°)
+    #     • 선 그래프 : 10 분 달 고도
+    #     • 마커      : 1 시간 달 고도
+    # ===============================================================
+        
+    # (a) 10 분 선 그래프
+    
+    fig.add_trace(
+        go.Scatter(
+            x=times_kst, y=moon_alts, mode='lines',
+            line=dict(color='black'), hoverinfo='skip', showlegend=False
+        ), row=2, col=1
+    )
 
-    # tmef_list와 image_files의 길이가 일치하는지 확인
-    if len(tmef_list) != len(image_files):
-        return image_src, 'tmef_list와 이미지 파일 수가 일치하지 않습니다.'
+    # (b) 1 시간 마커
+    fig.add_trace(
+        go.Scatter(
+            x=hourly_times, y=hourly_moon, mode='markers',
+            marker=dict(color='black', size=6),
+            hovertemplate='시간: %{x}<br>달 고도: %{y:.2f}°<extra></extra>',
+            showlegend=False
+        ), row=2, col=1
+    )
 
-    if slider_value >= len(tmef_list):
-        caption = '시간 정보가 없습니다.'
-    else:
-        tmef = tmef_list[slider_value]
-        caption = f"Time: {tmef}"
+    fig.add_hline(
+        y=30,                       # y 값
+        line_dash='longdash',             # 점선
+        line_color='red',
+        row=2, col=1                 # 첫 번째 그래프에만
+    )
 
-    return image_src, caption
+    # ===============================================================
+    # ④ 축·레이아웃 공통 설정
+    # ===============================================================
+    axis_opts = dict(showline=False, showgrid=True, gridcolor='whitesmoke', gridwidth=1)
+    fig.update_xaxes(tickmode='array', tickvals=twohour_times, ticktext=twohour_times,
+                     title_text='시간 (KST)', row=1, col=1, **axis_opts)
+    fig.update_xaxes(tickmode='array', tickvals=twohour_times, ticktext=twohour_times,
+                     title_text='시간 (KST)', row=2, col=1, **axis_opts)
+
+    fig.update_yaxes(title_text='달빛 밝기 (millilux)', row=1, col=1,
+                     type='log', range=[0, 3], autorange=False,
+                     title_standoff=20,   # y축과의 간격(px)
+                     tickmode='array', tickvals=[1,10,100,1000], **axis_opts)
+    fig.update_yaxes(title_text='달 고도각 (°)', row=2, col=1,
+                     title_standoff=40,   # y축과의 간격(px)
+                     range=[0, 80], autorange=False, **axis_opts)
+   
+    fig.update_layout(font=dict(size=20))  # 전체 텍스트 크기
+    fig.update_xaxes(title_font=dict(size=20), tickfont=dict(size=18))
+    fig.update_yaxes(title_font=dict(size=20), tickfont=dict(size=18))
+    fig.update_layout(legend=dict(font=dict(size=22)))
+    fig.update_layout(hoverlabel=dict(font_size=20))
+
+    # ── 간격 확보용 domain 조정 ──
+    fig.update_yaxes(domain=[0.50, 1.00], row=1, col=1)
+    fig.update_yaxes(domain=[0.00, 0.40], row=2, col=1)
+
+    fig.update_layout(
+        legend=dict(font=dict(size=24), orientation='h', y=1.15,
+                    x=0.5, xanchor='center'),
+        margin=dict(l=40, r=40, t=40, b=40),
+        height=650, bargap=0, bargroupgap=0,
+        plot_bgcolor='white', paper_bgcolor='white'
+    )
+
+    ntl_text = '인공광 있음 (1)' if ntl else '인공광 없음 (0)'
+    return fig, ntl_text
+
+from dash.dependencies import Input, Output, State
+import os
 
 @app.callback(
-    Output('url', 'pathname'),
-    [Input('clouds-button', 'n_clicks')],
-    prevent_initial_call=True
+    [Output('custom-slider', 'marks'),
+     Output('custom-slider', 'min'),
+     Output('custom-slider', 'max'),
+     Output('custom-slider', 'value'),
+     Output('image-placeholder', 'children')],
+    [Input('date-picker', 'date'),
+     Input('custom-slider', 'value'),
+     Input('impact-option', 'value')]  # ← 추가!
 )
-def navigate_to_clouds(n_clicks):
-    if n_clicks is None:
-        raise PreventUpdate  # 버튼이 클릭되지 않으면 콜백이 실행되지 않음
-    return '/clouds'
+def update_slider_and_image(date_str, slider_idx, impact_opt):
+    # 영향평가 체크 여부
+    impact_checked = 'impact' in impact_opt
 
-# 애플리케이션 실행
-if __name__ == '__main__':
-    app.run_server(debug=True)
+    # 파일 prefix 결정
+    prefix = "illum_risk_" if impact_checked else "illum_"
+
+    # 1. 시간 리스트 생성 (20시~08시)
+    date = datetime.fromisoformat(date_str)
+    hours = list(range(20, 24)) + list(range(0, 9))
+    time_labels = []
+    time_keys = []
+    for h in hours:
+        if h >= 20:
+            dt = datetime(date.year, date.month, date.day, h)
+        else:
+            dt = datetime(date.year, date.month, date.day, h) + timedelta(days=1)
+        key = dt.strftime("%Y%m%d%H")
+        label = dt.strftime("%H")
+        time_labels.append(label)
+        time_keys.append(key)
+
+    # 2. clouds 폴더 내 모든 이미지 파일 탐색, 폴더명 내림차순(최신 우선)
+    image_map = {}
+    clouds_root = os.path.join("assets", "clouds")
+    if os.path.exists(clouds_root):
+        subdirs = sorted(
+            [d for d in os.listdir(clouds_root) if os.path.isdir(os.path.join(clouds_root, d))],
+            reverse=True
+        )
+        for subdir in subdirs:
+            folder = os.path.join(clouds_root, subdir)
+            for fname in os.listdir(folder):
+                if fname.startswith(prefix) and fname.endswith(".png"):
+                    key = fname.replace(prefix, "").replace(".png", "")
+                    if key not in image_map:
+                        image_map[key] = os.path.join(folder, fname)
+
+    # 3. 슬라이더 marks/min/max/value
+    marks = {i: label for i, label in enumerate(time_labels)}
+    min_val = 0
+    max_val = len(time_labels) - 1
+    value = slider_idx if slider_idx is not None else 0
+
+    # 4. 이미지 파일 경로 (가장 최근 폴더 기준)
+    img_key = time_keys[value]
+    img_path = image_map.get(img_key)
+
+    if img_path and os.path.exists(img_path):
+        # src 경로를 /assets/... 형식으로 설정
+        relative_path = os.path.relpath(img_path, "assets")
+        img_div = html.Div(
+            html.Img(src=f"/assets/{relative_path.replace(os.sep, '/')}", style={'width': '100%', 'max-width': '400px'}),
+            style={'display': 'flex', 'justifyContent': 'center'}
+        )
+    else:
+        img_div = html.Div(
+            "no-image",
+            style={
+                'color': 'gray',
+                'font-size': '2rem',
+                'text-align': 'center',
+                'margin-top': '2rem',
+                'display': 'flex',
+                'justifyContent': 'center'
+            }
+        )
+
+    return marks, min_val, max_val, value, img_div
+
+# ========================
+# Run Server
+# ========================
+if __name__ == "__main__":
+    app.run(debug=True)
+    input("Press Enter to exit...")
+
+# To create a standalone executable with PyInstaller, use the following command:
+#pyinstaller --onefile --add-data "assets;assets" --add-data "C:/Users/Jond Doe/AppData/Local/Programs/Python/Python313/Lib/site-packages/dash/dash-renderer/build/*;dash/dash-renderer/build" --add-data "C:/Users/Jond Doe/AppData/Local/Programs/Python/Python313/Lib/site-packages/plotly/package_data/plotly.min.js;plotly/package_data" --hidden-import "numpy" --hidden-import "skyfield" app.py
