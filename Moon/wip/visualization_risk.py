@@ -158,72 +158,71 @@ def main(tmfc_override=None, illum_only=False):
             logger.warning(f"구름자료 컬럼 {cloud_col}이(가) 데이터에 없습니다. 건너뜁니다.")
             continue
 
+        # 조도 계산 (한 번만 수행)
         illum_val = df['R_light'] * df[cloud_col].map(CLOUD_FACTOR).fillna(DEFAULT_FACTOR)
+        df['illum_mlux'] = illum_val * 1000.0  # mlux 단위로 변환
 
-        if illum_only:
-            # mlux 단위로 변환
-            illum_val_mlux = illum_val * 1000.0
-            logger.info(f"Rendering illuminance map for {tcol} (mlux)")
-            fig = plt.figure(figsize=(10, 8))
-            ax = fig.add_subplot(1, 1, 1, projection=proj)
-            ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX], crs=ccrs.PlateCarree())
-            ax.coastlines(resolution='10m')
-            ax.add_feature(cfeature.BORDERS.with_scale('10m'))
-            ax.add_feature(cfeature.LAND.with_scale('10m'), facecolor='lightgray')
-            sc = ax.scatter(
-                df['lon'], df['lat'],
-                c=illum_val_mlux,
-                s=GRID_MARKER_SIZE,
-                marker='s',
-                cmap='cividis',
-                vmin=0, vmax=300,
-                transform=ccrs.PlateCarree()
-            )
-            cbar = plt.colorbar(sc, ax=ax, orientation='vertical', pad=0.02)
-            cbar.set_label('Illuminance (mlux)')
-            ax.set_title(f"Illuminance at {tcol} (KST)")
-            out_fname = csv_path.parent / f"illum_{tcol}.png"
-            plt.savefig(out_fname, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            logger.info(f"Saved {out_fname}")
-        else:
-            # 기존 risk 카테고리 시각화
-            df['illum_mlux'] = illum_val * 1000.0
-            df['risk_cat'] = pd.cut(df['illum_mlux'], bins=bins, labels=labels)
-            logger.info(f"Rendering scatter for {tcol}")
-            fig = plt.figure(figsize=(10, 8))
-            ax = fig.add_subplot(1, 1, 1, projection=proj)
-            ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX], crs=ccrs.PlateCarree())
-            ax.coastlines(resolution='10m')
-            ax.add_feature(cfeature.BORDERS.with_scale('10m'))
-            ax.add_feature(cfeature.LAND.with_scale('10m'), facecolor='lightgray')
-            for cat, color in risk_colors.items():
-                sub = df[df['risk_cat'] == cat]
-                if not sub.empty:
-                    ax.scatter(
-                        sub['lon'], sub['lat'],
-                        s=GRID_MARKER_SIZE,
-                        marker='s',
-                        color=color,
-                        transform=ccrs.PlateCarree()
-                    )
-            legend_elements = [
-                Line2D([0], [0], marker='s', color=color, linestyle='', markersize=8, label=label)
-                for label, color in risk_colors.items()
-            ]
-            ax.legend(
-                handles=legend_elements,
-                title='위험 수준',
-                loc='lower right',
-                prop=font_prop,
-                fontsize=12,
-                title_fontsize=14
-            )
-            ax.set_title(f"Illuminance at {tcol} (KST)")
-            out_fname = csv_path.parent / f"illum_risk_{tcol}.png"
-            plt.savefig(out_fname, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            logger.info(f"Saved {out_fname}")
+        # 1. 조도 이미지 렌더링
+        logger.info(f"Rendering illuminance map for {tcol} (mlux)")
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(1, 1, 1, projection=proj)
+        ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX], crs=ccrs.PlateCarree())
+        ax.coastlines(resolution='10m')
+        ax.add_feature(cfeature.BORDERS.with_scale('10m'))
+        ax.add_feature(cfeature.LAND.with_scale('10m'), facecolor='lightgray')
+        sc = ax.scatter(
+            df['lon'], df['lat'],
+            c=df['illum_mlux'],
+            s=GRID_MARKER_SIZE,
+            marker='s',
+            cmap='cividis',
+            vmin=0, vmax=300,
+            transform=ccrs.PlateCarree()
+        )
+        cbar = plt.colorbar(sc, ax=ax, orientation='vertical', pad=0.02)
+        cbar.set_label('Illuminance (mlux)')
+        ax.set_title(f"Illuminance at {tcol} (KST)")
+        out_fname = csv_path.parent / f"illum_{tcol}.png"
+        plt.savefig(out_fname, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        logger.info(f"Saved {out_fname}")
+
+        # 2. 영향평가 이미지 렌더링
+        logger.info(f"Rendering risk map for {tcol}")
+        df['risk_cat'] = pd.cut(df['illum_mlux'], bins=bins, labels=labels)
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(1, 1, 1, projection=proj)
+        ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX], crs=ccrs.PlateCarree())
+        ax.coastlines(resolution='10m')
+        ax.add_feature(cfeature.BORDERS.with_scale('10m'))
+        ax.add_feature(cfeature.LAND.with_scale('10m'), facecolor='lightgray')
+        for cat, color in risk_colors.items():
+            sub = df[df['risk_cat'] == cat]
+            if not sub.empty:
+                ax.scatter(
+                    sub['lon'], sub['lat'],
+                    s=GRID_MARKER_SIZE,
+                    marker='s',
+                    color=color,
+                    transform=ccrs.PlateCarree()
+                )
+        legend_elements = [
+            Line2D([0], [0], marker='s', color=color, linestyle='', markersize=8, label=label)
+            for label, color in risk_colors.items()
+        ]
+        ax.legend(
+            handles=legend_elements,
+            title='위험 수준',
+            loc='lower right',
+            prop=font_prop,
+            fontsize=12,
+            title_fontsize=14
+        )
+        ax.set_title(f"Illuminance Risk at {tcol} (KST)")
+        out_fname = csv_path.parent / f"illum_risk_{tcol}.png"
+        plt.savefig(out_fname, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        logger.info(f"Saved {out_fname}")
 
     if not time_cols:
         logger.warning("time_cols가 비어 있습니다. 생성할 이미지가 없습니다. CSV 파일과 시간 조건을 확인하세요.")
@@ -237,7 +236,6 @@ def main(tmfc_override=None, illum_only=False):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--tmfc', type=str, default=None, help='TMFC(YYYYMMDDHH) 직접 지정')
-    parser.add_argument('--illum', action='store_true', help='조도(R_light * cloud factor)만 시각화')
+    parser.add_argument('--tmfc', type=str, default=None, help='TMFC(YYYYMMDDHH) 직접 지정') 
     args = parser.parse_args()
-    main(tmfc_override=args.tmfc, illum_only=args.illum)
+    main(tmfc_override=args.tmfc)
