@@ -160,6 +160,33 @@ main_layout = dbc.Container(
                     width='auto'
                 ),
                 dbc.Col(
+                    dcc.Checklist(
+                        id='vis-option',
+                        options=[{'label': '지상시정', 'value': 'vis'}],
+                        value=[],
+                        labelStyle={'margin-right': '1rem'}
+                    ),
+                    width='auto'
+                ),
+                dbc.Col(
+                    dcc.Checklist(
+                        id='ws-option',
+                        options=[{'label': '지상바람', 'value': 'ws'}],
+                        value=[],
+                        labelStyle={'margin-right': '1rem'}
+                    ),
+                    width='auto'
+                ),
+                dbc.Col(
+                    dcc.Checklist(
+                        id='chlow-option',
+                        options=[{'label': '운저고도', 'value': 'chlow'}],
+                        value=[],
+                        labelStyle={'margin-right': '1rem'}
+                    ),
+                    width='auto'
+                ),
+                dbc.Col(
                     html.Span(id='ntl-label', style={'font-weight': 'bold'}),
                     width='auto'
                 ),
@@ -566,14 +593,23 @@ import os
      Output('image-placeholder', 'children')],
     [Input('date-picker', 'date'),
      Input('custom-slider', 'value'),
-     Input('impact-option', 'value')]  # ← 추가!
+     Input('impact-option', 'value'),
+     Input('vis-option',    'value'),
+     Input('ws-option',     'value'),
+     Input('chlow-option',  'value')]
 )
-def update_slider_and_image(date_str, slider_idx, impact_opt):
-    # 영향평가 체크 여부
-    impact_checked = 'impact' in impact_opt
-
-    # 파일 prefix 결정
-    prefix = "illum_risk_" if impact_checked else "illum_"
+def update_slider_and_image(date_str, slider_idx, impact_opt, vis_opt, ws_opt, chlow_opt):
+    # 어떤 토글이 눌렸나 우선순위대로 검사
+    if 'impact' in impact_opt:
+        prefix = "illum_risk_"
+    elif 'vis' in vis_opt:
+        prefix = "illum_vis_"
+    elif 'ws' in ws_opt:
+        prefix = "illum_ws10_"
+    elif 'chlow' in chlow_opt:
+        prefix = "illum_chlow_"
+    else:
+        prefix = "illum_"
 
     # 1. 시간 리스트 생성 (20시~08시)
     date = datetime.fromisoformat(date_str)
@@ -644,6 +680,3 @@ def update_slider_and_image(date_str, slider_idx, impact_opt):
 if __name__ == "__main__":
     app.run(debug=True)
     input("Press Enter to exit...")
-
-# To create a standalone executable with PyInstaller, use the following command:
-#pyinstaller --onefile --add-data "assets;assets" --add-data "C:/Users/Jond Doe/AppData/Local/Programs/Python/Python313/Lib/site-packages/dash/dash-renderer/build/*;dash/dash-renderer/build" --add-data "C:/Users/Jond Doe/AppData/Local/Programs/Python/Python313/Lib/site-packages/plotly/package_data/plotly.min.js;plotly/package_data" --hidden-import "numpy" --hidden-import "skyfield" app.py
