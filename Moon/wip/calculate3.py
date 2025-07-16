@@ -101,7 +101,44 @@ def moon_ecliptic_latitude(T):
     return beta_moon
 
 def moon_distance(T, D_moon, M_moon, F_moon):
-    return 385000.56 - 20905.355 * math.cos(math.radians(M_moon))
+    """
+    달과 지구 사이의 거리를 보다 정확하게 계산합니다.
+    T: 줄리안 세기
+    D_moon: 평균 편각 (도 단위)
+    M_moon: 평균 근점 (도 단위)
+    F_moon: 달의 평균 황위 (도 단위)
+    반환값: 달-지구 거리 (킬로미터)
+    """
+    distance = (
+        385000.56
+        - 20905.355 * math.cos(math.radians(M_moon))
+        - 3699.111 * math.cos(math.radians(2 * D_moon))
+        - 2955.968 * math.cos(math.radians(2 * M_moon))
+        - 570.0 * math.cos(math.radians(2 * D_moon - M_moon))
+        + 246.0 * math.cos(math.radians(2 * D_moon + M_moon))
+        - 205.0 * math.cos(math.radians(M_moon + F_moon))
+        + 171.0 * math.cos(math.radians(D_moon - F_moon))
+        - 152.0 * math.cos(math.radians(D_moon + F_moon))
+        + 129.0 * math.cos(math.radians(D_moon - 2 * F_moon))
+        + 63.0 * math.cos(math.radians(2 * D_moon + F_moon))
+        + 63.0 * math.cos(math.radians(M_moon + 2 * F_moon))
+        - 59.0 * math.cos(math.radians(2 * D_moon - 2 * F_moon))
+        - 58.0 * math.cos(math.radians(M_moon - F_moon))
+        + 51.0 * math.cos(math.radians(D_moon + 2 * F_moon))
+        - 48.0 * math.cos(math.radians(D_moon - M_moon))
+        - 46.0 * math.cos(math.radians(2 * D_moon + 2 * F_moon))
+        + 46.0 * math.cos(math.radians(3 * D_moon))
+        + 29.0 * math.cos(math.radians(2 * M_moon + F_moon))
+        + 29.0 * math.cos(math.radians(D_moon + M_moon))
+        + 26.0 * math.cos(math.radians(2 * D_moon - M_moon + F_moon))
+        - 22.0 * math.cos(math.radians(M_moon + 2 * F_moon))
+        + 21.0 * math.cos(math.radians(D_moon - 2 * F_moon))
+        + 17.0 * math.cos(math.radians(2 * D_moon + M_moon))
+        - 16.0 * math.cos(math.radians(D_moon - M_moon - F_moon))
+        - 16.0 * math.cos(math.radians(2 * D_moon + M_moon - F_moon))
+        - 15.0 * math.cos(math.radians(2 * D_moon - M_moon - F_moon))
+    )
+    return distance  # km 단위
 
 def sun_illuminance(altitude_sun_deg):
     if altitude_sun_deg >= 0:
@@ -115,42 +152,8 @@ def sun_illuminance(altitude_sun_deg):
     else:
         return 0
 
-def get_illuminance_at(year, month, day, hour, minute, latitude, longitude):
-    astro = calculate_positions(year, month, day, hour, minute, 0, latitude, longitude)
-
-    altitude_deg = astro['Alt_moon']
-    distance_moon_km = astro['Distance_moon']
-    phase_angle = astro['Phase_angle']
-    z_deg = 90 - altitude_deg
-    pressure_pa = 101325
-
-    if altitude_deg <= 0:
-        Ev_G = 0.0
-    else:
-        separation = 180 - phase_angle
-        m = -12.73 + 0.026 * abs(phase_angle) + 4e-9 * phase_angle**4
-        X = (-0.140194 * z_deg / (-91.674385 + z_deg)) - 0.03
-        Ev_A = 10**(-0.4 * (m + X + 16.57)) * 10.7637
-        Ev_B = Ev_A * max(0.0, math.sin(math.radians(altitude_deg)))
-        if abs(phase_angle) < 6:
-            Ev_C = Ev_B * (1 + 0.4 * (6 - abs(phase_angle)) / 6)
-        else:
-            Ev_C = Ev_B
-        is_waning = False  # 위상 변화 정보 없으므로 생략 또는 추정 필요
-        if is_waning:
-            Ev_D = Ev_C * (1 - 0.00026 * abs(phase_angle))
-        else:
-            Ev_D = Ev_C
-        Ev_E = Ev_D * (384400 / distance_moon_km)**2
-        Ev_F = Ev_E * ((18.964 * math.exp(-0.229 * (pressure_pa / 101325))) / 15.083)
-        Ev_G = (Ev_F + 0.0008) * 0.863
-
-    R_light_sun = sun_illuminance(astro['Alt_sun'])
-    R_light_total = Ev_G + R_light_sun
-    return R_light_total
-
-def calculate_positions(year, month, day, hour, minute, second, latitude, longitude):
-    JD = julian_day(year, month, day, hour, minute, second)
+def calculate_positions(year, month, day, hour, minute, latitude, longitude):
+    JD = julian_day(year, month, day, hour, minute, 0)
     T = get_julian_centuries(JD)
 
     lambda_sun = calculate_lambda_sun(T)
@@ -181,7 +184,6 @@ def calculate_positions(year, month, day, hour, minute, second, latitude, longit
 
     cos_psi = math.cos(math.radians(beta_moon)) * math.cos(math.radians(lambda_moon - lambda_sun))
     psi = math.degrees(math.acos(cos_psi))
-
     GMST = greenwich_mean_sidereal_time(JD, T)
     GAST = apparent_sidereal_time(GMST, T)
     LST = (GAST + longitude) % 360
@@ -199,7 +201,7 @@ def calculate_positions(year, month, day, hour, minute, second, latitude, longit
         'RA_moon': alpha_moon,
         'Dec_moon': delta_moon,
         'Distance_moon': distance,
-        'Phase_angle': psi,
+        'Phase_angle': 180 - psi,  # Modified to reflect the correct phase angle
         'LST': LST,
         'HA_sun': HA_sun,
         'HA_moon': HA_moon,
@@ -209,8 +211,47 @@ def calculate_positions(year, month, day, hour, minute, second, latitude, longit
         'Az_moon': az_moon
     }
 
+def get_illuminance_at(year, month, day, hour, minute, latitude, longitude):
+    astro = calculate_positions(year, month, day, hour, minute, latitude, longitude)
+    D_moon = moon_mean_elongation(astro['T'])
+
+    altitude_deg = astro['Alt_moon']
+    distance_moon_km = astro['Distance_moon']
+    phase_angle = astro['Phase_angle']
+    z_deg = 90 - altitude_deg
+    pressure_pa = 101325
+
+    if altitude_deg <= 0:
+        Ev_G = 0.0
+    else:
+        m = -12.73 + 0.026 * abs(phase_angle) + 4e-9 * phase_angle**4
+        X = (-0.140194 * z_deg / (-91.674385 + z_deg)) - 0.03
+        Ev_A = 10**(-0.4 * (m + X + 16.57)) * 10.7637
+        Ev_B = Ev_A * max(0.0, math.sin(math.radians(altitude_deg)))
+        if abs(phase_angle) < 6:
+            Ev_C = Ev_B * (1 + 0.4 * (6 - abs(phase_angle)) / 6)
+        else:
+            Ev_C = Ev_B
+        is_waning = D_moon > 180
+        if is_waning:
+            Ev_D = Ev_C * (1 - 0.00026 * abs(phase_angle))
+        else:
+            Ev_D = Ev_C
+        Ev_E = Ev_D * (384400 / distance_moon_km)**2
+        Ev_F = Ev_E * ((18.964 * math.exp(-0.229 * (pressure_pa / 101325))) / 15.083)
+        Ev_G = (Ev_F + 0.0008) * 0.863
+
+    R_light_sun = sun_illuminance(astro['Alt_sun'])
+    R_light_total = Ev_G + R_light_sun
+    return R_light_total
+
+def get_moon_altitude(year, month, day, hour, minute, latitude, longitude):
+    alt_moon = calculate_positions(year, month, day, hour, minute, latitude, longitude)['Alt_moon']
+    return alt_moon
+
 if __name__ == '__main__':
-    lux = get_illuminance_at(2025, 7, 15, 12, 0, 37.57, 126.98)
-    alt_moon = calculate_positions(2025, 7, 15, 12, 0, 0, 37.57, 126.98)['Alt_moon']
-    distance_moon = calculate_positions(2025, 7, 15, 12, 0, 0, 37.57, 126.98)['Distance_moon']
-    print(f"Total illuminance: {lux:.2f} lux, Moon altitude: {alt_moon:.2f}°, moon_distance: {distance_moon:.2f} km")
+    lux = get_illuminance_at(2025, 9, 10, 15, 0, 37.57, 126.98)
+    phase_angle = calculate_positions(2025, 9, 10, 15, 0, 37.57, 126.98)['Phase_angle']
+    alt_moon = get_moon_altitude(2025, 9, 10, 15, 0, 37.57, 126.98)
+    distance_moon = calculate_positions(2025, 9, 10, 15, 0, 37.57, 126.98)['Distance_moon']
+    print(f"Total illuminance: {lux:.2f} lux, phase_angle: {phase_angle:.2f}, Moon altitude: {alt_moon:.2f}°, moon_distance: {distance_moon:.2f} km")
